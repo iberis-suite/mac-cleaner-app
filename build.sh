@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 cd "${0:A:h}"
-VERSION=1.0.0
+VERSION=1.1.0
 APP="build/Mac Cleaner.app"
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)/MacCleanerBar"
@@ -26,6 +26,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-codesign --force --sign - "$APP"
+IDENTITY=$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application/{print $2; exit}')
+if [[ -n $IDENTITY ]]; then
+  codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
+else
+  codesign --force --sign - "$APP"
+fi
+codesign --verify --strict "$APP"
 ditto -c -k --keepParent "$APP" "build/MacCleanerBar-$VERSION.zip"
 print "OK: $APP"

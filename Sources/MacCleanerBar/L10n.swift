@@ -11,73 +11,138 @@ enum L {
     static var mb: String { fr ? "Mo" : "MB" }
     static var kb: String { fr ? "Ko" : "KB" }
 
+    private static func num(_ v: Double, _ digits: Int) -> String {
+        let f = NumberFormatter()
+        f.locale = Locale(identifier: fr ? "fr_FR" : "en_US")
+        f.numberStyle = .decimal
+        f.groupingSeparator = fr ? "\u{202F}" : ","
+        f.minimumFractionDigits = digits
+        f.maximumFractionDigits = digits
+        return f.string(from: NSNumber(value: v)) ?? String(format: "%.\(digits)f", v)
+    }
+
     static func human(kb k: Double) -> String {
-        if k >= 1_048_576 { return String(format: "%.1f %@", k / 1_048_576, gb) }
-        if k >= 1024 { return String(format: "%.1f %@", k / 1024, mb) }
-        return String(format: "%.0f %@", k, kb)
+        if k >= 1_048_576 { return "\(num(k / 1_048_576, 1)) \(gb)" }
+        if k >= 1024 { return "\(num(k / 1024, 0)) \(mb)" }
+        return "\(num(k, 0)) \(kb)"
     }
 
     static func human(bytes b: Int64) -> String {
         human(kb: Double(b) / 1024)
     }
 
+    static func rpm(_ v: Double) -> String {
+        num((v / 10).rounded() * 10, 0)
+    }
+
+    static func fans(_ count: Int, rpm r: Double?) -> String {
+        if count == 0 { return t("noFan") }
+        let word = count > 1 ? t("fans") : t("fan")
+        guard let r else { return "\(count) \(word)" }
+        return "\(count)\u{00A0}\(word) · " + "\(rpm(r)) \(t("rpm"))".replacingOccurrences(of: " ", with: "\u{00A0}")
+    }
+
     private static let frDict: [String: String] = [
         "disk": "Disque",
         "memory": "Mémoire",
-        "used": "utilisés",
-        "free": "libre",
-        "auto": "Nettoyage auto",
+        "heat": "Chaleur",
+        "freeDisk": "%@ libres",
+        "used": "utilisée",
+        "heatNormal": "Normale",
+        "heatHigh": "Élevée",
+        "heatHot": "Très chaude",
+        "fan": "ventilateur",
+        "fans": "ventilateurs",
+        "noFan": "Sans ventilateur",
+        "rpm": "tr/min",
+        "auto": "Tout nettoyer",
         "caches": "Caches",
-        "temp": "Fichiers temporaires",
+        "temp": "Fichiers inutiles",
         "trash": "Corbeille",
         "ram": "Libérer la RAM",
+        "ramUsed": "%d %% utilisée",
+        "ramDone": "Mémoire libre : %d %% → %d %%",
+        "ramFailed": "Libération de la RAM annulée",
+        "tools": "Outils",
+        "uninstall": "Désinstaller une app",
         "large": "Gros fichiers",
+        "downloads": "Anciens téléchargements",
+        "duplicates": "Doublons",
+        "startup": "Démarrage",
         "dev": "Projets dev",
-        "menu": "Menu complet",
-        "advanced": "Dans le Terminal",
+        "system": "Système",
+        "menu": "Ouvrir le menu complet dans le Terminal",
         "preview": "Aperçu",
         "cancel": "Annuler",
         "clean": "Nettoyer",
         "close": "Fermer",
         "running": "En cours…",
         "done": "Terminé",
-        "history": "Historique",
-        "freed30": "Libéré ces 30 derniers jours : %@",
-        "noHistory": "Aucun nettoyage encore",
+        "estimating": "Calcul…",
+        "freedMonth": "Libéré ce mois : %@",
         "login": "Lancer à l'ouverture de session",
         "quit": "Quitter",
         "missing": "Le moteur mac-cleaner est introuvable. Installe-le avec :",
         "noOutput": "(aucune sortie)",
         "exitCode": "Code de sortie : %d",
+        "search": "Rechercher une app",
+        "noApps": "Aucune app",
+        "leftovers": "Fichiers à mettre à la corbeille",
+        "total": "Total",
+        "toTrash": "Mettre à la corbeille",
+        "selectApp": "Choisis une app pour voir ses fichiers restants.",
+        "uninstalled": "%@ est dans la corbeille.",
     ]
 
     private static let enDict: [String: String] = [
         "disk": "Disk",
         "memory": "Memory",
+        "heat": "Heat",
+        "freeDisk": "%@ free",
         "used": "used",
-        "free": "free",
-        "auto": "Auto clean",
+        "heatNormal": "Normal",
+        "heatHigh": "High",
+        "heatHot": "Very hot",
+        "fan": "fan",
+        "fans": "fans",
+        "noFan": "Fanless",
+        "rpm": "rpm",
+        "auto": "Clean everything",
         "caches": "Caches",
-        "temp": "Temporary files",
+        "temp": "Junk files",
         "trash": "Trash",
         "ram": "Free up RAM",
+        "ramUsed": "%d %% used",
+        "ramDone": "Free memory: %d %% → %d %%",
+        "ramFailed": "Freeing RAM was cancelled",
+        "tools": "Tools",
+        "uninstall": "Uninstall an app",
         "large": "Large files",
+        "downloads": "Old downloads",
+        "duplicates": "Duplicates",
+        "startup": "Startup",
         "dev": "Dev projects",
-        "menu": "Full menu",
-        "advanced": "In Terminal",
+        "system": "System",
+        "menu": "Open the full menu in Terminal",
         "preview": "Preview",
         "cancel": "Cancel",
         "clean": "Clean",
         "close": "Close",
         "running": "Running…",
         "done": "Done",
-        "history": "History",
-        "freed30": "Freed in the last 30 days: %@",
-        "noHistory": "No cleanup yet",
+        "estimating": "Measuring…",
+        "freedMonth": "Freed this month: %@",
         "login": "Launch at login",
         "quit": "Quit",
         "missing": "The mac-cleaner engine was not found. Install it with:",
         "noOutput": "(no output)",
         "exitCode": "Exit code: %d",
+        "search": "Search apps",
+        "noApps": "No apps",
+        "leftovers": "Files to move to the Trash",
+        "total": "Total",
+        "toTrash": "Move to Trash",
+        "selectApp": "Pick an app to see its leftover files.",
+        "uninstalled": "%@ is in the Trash.",
     ]
 }
