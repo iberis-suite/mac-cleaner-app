@@ -4,8 +4,8 @@ import SwiftUI
 struct PanelView: View {
     @ObservedObject var model: Model
 
-    private let actions = ["auto", "caches", "temp", "trash"]
-    private let advanced: [(String, String?)] = [("ram", "ram"), ("large", "large"), ("dev", "dev"), ("menu", nil)]
+    private let actions = ["auto", "temp", "trash"]
+    private let advanced: [(String, String?)] = [("caches", "caches"), ("ram", "ram"), ("large", "large"), ("dev", "dev"), ("menu", nil)]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
