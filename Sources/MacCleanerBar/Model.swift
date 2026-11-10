@@ -22,8 +22,16 @@ final class CLIRun {
     private let process = Process()
     private var data = Data()
 
-    static func environment() -> [String: String] {
+    static var askpassPath: String? {
+        guard let p = Bundle.main.path(forResource: "askpass", ofType: nil),
+              FileManager.default.isExecutableFile(atPath: p) else { return nil }
+        return p
+    }
+
+    static func environment(askpass: Bool = false) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
+        env.removeValue(forKey: "SUDO_ASKPASS")
+        if askpass, let p = askpassPath { env["SUDO_ASKPASS"] = p }
         env["NO_COLOR"] = "1"
         env["TERM"] = "dumb"
         env["MAC_CLEANER_LANG"] = L.fr ? "fr" : "en"
@@ -34,13 +42,13 @@ final class CLIRun {
     }
 
     @discardableResult
-    static func start(cli: String, args: [String], output: ((String) -> Void)? = nil,
+    static func start(cli: String, args: [String], askpass: Bool = false, output: ((String) -> Void)? = nil,
                       completion: @escaping (String, Int32) -> Void) -> CLIRun {
         let run = CLIRun()
         let p = run.process
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
         p.arguments = [cli] + args
-        p.environment = environment()
+        p.environment = environment(askpass: askpass)
         p.standardInput = FileHandle.nullDevice
         let pipe = Pipe()
         p.standardOutput = pipe
@@ -102,6 +110,7 @@ final class Model: ObservableObject {
     @Published var topCPU: [AppUsage] = []
     @Published var topMemory: [AppUsage] = []
     @Published var activityExpanded: Bool
+    @Published var thermalState = ProcessInfo.processInfo.thermalState
 
     let cliPath: String?
     weak var panelWindow: NSWindow?
@@ -115,6 +124,7 @@ final class Model: ObservableObject {
     private let sampler = ProcSampler()
     private var current: CLIRun?
     private var lastEstimate: Date?
+    private var thermalObserver: NSObjectProtocol?
 
     init() {
         let d = UserDefaults.standard
@@ -129,6 +139,11 @@ final class Model: ObservableObject {
             Task { @MainActor in StatusItemOpener.open(panel: self?.panelWindow) }
         }
         AlertCenter.shared.setUp(enabled: alertsEnabled)
+        thermalObserver = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.thermalState = ProcessInfo.processInfo.thermalState }
+        }
         refresh()
         let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
@@ -165,16 +180,16 @@ final class Model: ObservableObject {
         return sysctlbyname("hw.optional.arm64", &v, &size, nil, 0) == 0 && v == 1
     }()
 
-    nonisolated static let heatThresholds: (Double, Double) = appleSilicon ? (80, 95) : (60, 80)
+    var temperatureLevel: Int? {
+        sensors.temperature.map { ChipProfile.current.level($0) }
+    }
 
-    nonisolated static func heatLevel(_ t: Double) -> Int {
-        t >= heatThresholds.1 ? 2 : (t >= heatThresholds.0 ? 1 : 0)
+    var heatLevel: Int {
+        max(Heat.level(thermalState), temperatureLevel ?? 0)
     }
 
     var level: Int {
-        var l = max(Model.level(pct: diskUsedPct), Model.level(pct: memUsedPct))
-        if let t = sensors.temperature { l = max(l, Model.heatLevel(t)) }
-        return l
+        max(Model.level(pct: diskUsedPct), Model.level(pct: memUsedPct), min(2, heatLevel))
     }
 
     nonisolated static func nsColor(level: Int) -> NSColor {
@@ -209,6 +224,7 @@ final class Model: ObservableObject {
         launchAtLogin = SMAppService.mainApp.status == .enabled
         weeklyEnabled = WeeklyJob.isInstalled
         fullDiskAccess = DiskAccess.hasFullAccess()
+        thermalState = ProcessInfo.processInfo.thermalState
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let pct = Model.readMemFree()
             let s = Sensors.read()
@@ -496,27 +512,6 @@ final class Model: ObservableObject {
     nonisolated static func stripANSI(_ s: String) -> String {
         s.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression)
             .replacingOccurrences(of: "\r", with: "\n")
-    }
-
-    func openInTerminal(_ command: String?) {
-        guard let cli = cliPath else {
-            phase = .cleaned("")
-            output = L.t("missing") + "\n" + Model.installHint
-            return
-        }
-        let quoted = "'" + cli.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        let line = "exec /bin/zsh \(quoted)" + (command.map { " \($0)" } ?? "")
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("mac-cleaner-\(UUID().uuidString.prefix(8)).command")
-        let script = "#!/bin/zsh\nrm -f \"$0\"\n\(line)\n"
-        do {
-            try script.write(to: url, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
-        } catch { return }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = ["-a", "Terminal", url.path]
-        try? p.run()
     }
 
     func setLaunchAtLogin(_ on: Bool) {

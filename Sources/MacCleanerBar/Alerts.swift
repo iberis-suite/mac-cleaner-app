@@ -135,9 +135,15 @@ extension Model {
             center.post(kind: "disk", title: L.t("alertDiskTitle"),
                         body: String(format: L.t("alertDiskBody"), freeLabel, pct))
         }
-        if let t = sensors.temperature, Model.heatLevel(t) == 2 { hotStreak += 1 } else { hotStreak = 0 }
-        if hotStreak >= 2, let t = sensors.temperature {
-            center.post(kind: "heat", title: L.t("alertHeatTitle"), body: String(format: L.t("alertHeatBody"), t))
+        if heatLevel >= 2 { hotStreak += 1 } else { hotStreak = 0 }
+        if hotStreak >= 2 {
+            let body: String
+            if let t = sensors.temperature, (temperatureLevel ?? 0) >= 2 {
+                body = String(format: L.t("alertHeatBody"), t)
+            } else {
+                body = String(format: L.t("alertHeatState"), Heat.label(heatLevel))
+            }
+            center.post(kind: "heat", title: L.t("alertHeatTitle"), body: body)
         }
         if let at = trashCheckedAt, Date().timeIntervalSince(at) < 1800 {
             alertTrash(trashBytes)

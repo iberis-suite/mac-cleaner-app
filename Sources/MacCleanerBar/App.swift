@@ -4,15 +4,21 @@ import SwiftUI
 @MainActor
 enum Windows {
     static var uninstall: UninstallWindow?
+    static var tools: [String: ToolWindow] = [:]
 
-    static func openUninstaller(_ model: Model) {
-        if uninstall == nil {
-            uninstall = UninstallWindow(cliPath: model.cliPath) { [weak model] in
-                model?.refresh()
-                model?.refreshEstimates(force: true)
-            }
+    static func open(_ tool: String, model: Model) {
+        let changed: () -> Void = { [weak model] in
+            model?.refresh()
+            model?.refreshEstimates(force: true)
         }
-        uninstall?.show()
+        if tool == "uninstall" {
+            if uninstall == nil { uninstall = UninstallWindow(cliPath: model.cliPath, onChange: changed) }
+            uninstall?.show()
+            return
+        }
+        let w = tools[tool] ?? ToolWindow(tool: tool, cliPath: model.cliPath, onChange: changed)
+        tools[tool] = w
+        w.show()
     }
 }
 
@@ -22,7 +28,7 @@ struct MacCleanerBarApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            PanelView(model: model) { Windows.openUninstaller(model) }
+            PanelView(model: model) { Windows.open($0, model: model) }
         } label: {
             HStack(spacing: 3) {
                 Image(nsImage: model.statusIcon)

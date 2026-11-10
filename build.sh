@@ -1,13 +1,15 @@
 #!/bin/zsh
 set -euo pipefail
 cd "${0:A:h}"
-VERSION=1.2.0
+VERSION=1.2.1
 APP="build/Mac Cleaner.app"
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)/MacCleanerBar"
 rm -rf build
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/MacCleanerBar"
+cp Resources/askpass "$APP/Contents/Resources/askpass"
+chmod 755 "$APP/Contents/Resources/askpass"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

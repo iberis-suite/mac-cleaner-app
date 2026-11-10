@@ -1,0 +1,5 @@
+#!/bin/zsh
+setopt extended_glob
+prompt=${${1##[[:space:]]##}%%[[:space:]]##}
+[[ ${#prompt} -lt 3 ]] && prompt="Mot de passe administrateur :"
+exec /usr/bin/osascript -e 'on run argv' -e 'activate' -e 'text returned of (display dialog (item 1 of argv) with title "Mac Cleaner" default answer "" with hidden answer with icon caution)' -e 'end run' -- "$prompt"
