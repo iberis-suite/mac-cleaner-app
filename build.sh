@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 cd "${0:A:h}"
-VERSION=1.3.1
+VERSION=1.3.2
 APP="build/Mac Cleaner.app"
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)/MacCleanerBar"

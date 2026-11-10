@@ -462,6 +462,17 @@ enum Snapshots {
             m.output = "rm: ~/Library/Safari/History.db: Operation not permitted"
             m.message = L.fr ? "Accès refusé à l'historique Safari." : "Permission denied on Safari history."
         })
+        s.append(window("outil-dev-sans-unity") { h in
+            h.current = "dev"
+            let m = h.tool("dev")
+            m.items = items("dev").filter { $0.type != "unity" }
+            m.selected = Set(m.items.prefix(1).map(\.key))
+        })
+        s.append(window("outil-dev-unity-seul") { h in
+            h.current = "dev"
+            let m = h.tool("dev")
+            m.items = items("dev").filter { $0.type == "unity" }
+        })
         return s
     }
 }

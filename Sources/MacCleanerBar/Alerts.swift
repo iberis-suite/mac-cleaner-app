@@ -155,7 +155,7 @@ extension Model {
         if hotStreak >= 2 {
             let body: String
             if let t = sensors.temperature, (temperatureLevel ?? 0) >= 2 {
-                body = String(format: L.t("alertHeatBody"), t)
+                body = String(format: L.t("alertHeatBody"), L.deg(t))
             } else {
                 body = String(format: L.t("alertHeatState"), Heat.label(heatLevel))
             }

@@ -318,8 +318,6 @@ struct ToolView: View {
             }
         case "startup":
             note(L.t("startupNote"))
-        case "dev":
-            note(L.t("unityWarn"))
         default:
             EmptyView()
         }
@@ -357,7 +355,7 @@ struct ToolView: View {
                     if model.failed || model.message == L.t("cancelled") {
                         Color.clear.frame(height: 80)
                     } else {
-                        EmptyNote(text: L.t(model.tool == "startup" ? "emptyStartup" : "nothingFound"))
+                        EmptyNote(text: L.t(["startup": "emptyStartup", "dev": "emptyDev"][model.tool] ?? "nothingFound"))
                     }
                 } else {
                     switch model.tool {
@@ -535,6 +533,7 @@ struct ToolView: View {
         }
         if !unity.isEmpty {
             sectionTitle(L.t("unityLib"))
+            note(L.t("unityWarn")).padding(.horizontal, 4).padding(.bottom, 2)
             ForEach(unity) { checkRow($0, maxKB: unity.map(\.kb).max() ?? 0) }
         }
     }

@@ -242,7 +242,7 @@ final class Model: ObservableObject {
 
     var freeLabel: String {
         let gb = Double(diskFree) / 1_000_000_000
-        return String(format: "%.0f %@", gb, L.gb)
+        return "\(L.num(gb, 0)) \(L.gb)"
     }
 
     static let symbolName: String = {

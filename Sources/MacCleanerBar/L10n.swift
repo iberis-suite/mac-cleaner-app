@@ -11,7 +11,7 @@ enum L {
     static var mb: String { fr ? "Mo" : "MB" }
     static var kb: String { fr ? "Ko" : "KB" }
 
-    private static func num(_ v: Double, _ digits: Int) -> String {
+    static func num(_ v: Double, _ digits: Int) -> String {
         let f = NumberFormatter()
         f.locale = Locale(identifier: fr ? "fr_FR" : "en_US")
         f.numberStyle = .decimal
@@ -20,6 +20,10 @@ enum L {
         f.maximumFractionDigits = digits
         return f.string(from: NSNumber(value: v)) ?? String(format: "%.\(digits)f", v)
     }
+
+    static func pct(_ v: Double, _ digits: Int = 1) -> String { "\(num(v, digits)) %" }
+
+    static func deg(_ v: Double) -> String { "\(num(v, 0)) °C" }
 
     static func human(kb k: Double) -> String {
         if k >= 1_048_576 { return "\(num(k / 1_048_576, 1)) \(gb)" }
@@ -73,7 +77,7 @@ enum L {
         "system": "Système",
         "cachesAdv": "Caches avancés",
         "heatCritical": "Critique",
-        "heatHelp": "Profil : %@ · seuils %.0f / %.0f °C · état macOS : %@",
+        "heatHelp": "Profil : %@ · seuils %@ / %@ · état macOS : %@",
         "alertHeatState": "macOS signale une chaleur « %@ » depuis plusieurs minutes.",
         "minSize": "Taille mini (Mo)",
         "olderThan": "Plus vieux que (jours)",
@@ -85,18 +89,19 @@ enum L {
         "showInFinder": "Afficher dans le Finder",
         "disable": "Désactiver",
         "delete": "Supprimer",
-        "thin": "Amincir et purger",
+        "thin": "Libérer",
         "confirm": "Confirmer",
         "kept": "gardé",
         "group": "Groupe %d · %d × %@",
         "loginItems": "Ouverture de session",
-        "agents": "Agents",
-        "daemons": "Daemons",
+        "agents": "Tâches en arrière-plan",
+        "daemons": "Services système",
         "loaded": "actif",
         "notLoaded": "inactif",
-        "worktrees": "Worktrees git",
-        "unityLib": "Library/ des projets Unity",
-        "unityWarn": "Unity le recréera à la prochaine ouverture (réimport de tous les assets).",
+        "worktrees": "Copies de projet inutilisées",
+        "unityLib": "Projets Unity",
+        "unityWarn": "Cache de projet Unity : libère de la place, mais la prochaine ouverture du projet sera longue (Unity reconstruit ce cache).",
+        "emptyDev": "Aucun projet de développement à nettoyer.",
         "startupNote": "Désactiver retire l'élément (fichier à la corbeille). Une app peut le réinstaller.",
         "previewNote": "Aperçu : rien n'a encore été fait. Confirme pour lancer.",
         "doneNote": "Terminé. La liste a été relue.",
@@ -136,7 +141,7 @@ enum L {
         "alertDiskTitle": "Disque presque plein",
         "alertDiskBody": "Il reste %@ libres (%d %%).",
         "alertHeatTitle": "Mac très chaud",
-        "alertHeatBody": "Le processeur est à %.0f °C depuis plusieurs minutes.",
+        "alertHeatBody": "Le processeur est à %@ depuis plusieurs minutes.",
         "alertTrashTitle": "Corbeille volumineuse",
         "alertTrashBody": "La corbeille occupe %@.",
         "excluded": "exclu",
@@ -166,7 +171,7 @@ enum L {
         "trashInfo": "%@ · récupérable depuis la corbeille.",
         "trashFailed": "Impossible de mettre à la corbeille : %@",
         "trashed": "« %@ » est dans la corbeille.",
-        "maintNote": "Cache DNS, index Spotlight, base « Ouvrir avec » et scripts périodiques. Rien n'est supprimé.",
+        "maintNote": "Rafraîchit le réseau, la recherche de fichiers, le menu « Ouvrir avec » et les tâches d'entretien de macOS. Rien n'est supprimé.",
         "maintSudo": "Une seule demande de mot de passe administrateur pour tout.",
         "maintFailed": "Entretien annulé ou incomplet.",
         "privacyNote": "Historique et cache des navigateurs, effacés pour de bon. Les cookies sont gardés (sinon déconnexion de tous les sites) et un navigateur ouvert est ignoré.",
@@ -199,11 +204,11 @@ enum L {
         "desc_downloads": "Téléchargements oubliés",
         "desc_duplicates": "Copies identiques d'un dossier",
         "desc_startup": "Ce qui se lance tout seul",
-        "desc_dev": "Worktrees et Library Unity",
+        "desc_dev": "Copies de projet et caches inutilisés",
         "desc_cachesAdv": "Chaque cache, au choix",
-        "desc_system": "Snapshots et binaires",
+        "desc_system": "Sauvegardes locales et apps à alléger",
         "desc_diskmap": "Où part la place",
-        "desc_maintenance": "DNS, Spotlight, scripts",
+        "desc_maintenance": "Réseau, recherche, tâches de fond",
         "desc_privacy": "Historique des navigateurs",
     ]
 
@@ -238,7 +243,7 @@ enum L {
         "system": "System",
         "cachesAdv": "Advanced caches",
         "heatCritical": "Critical",
-        "heatHelp": "Profile: %@ · thresholds %.0f / %.0f °C · macOS state: %@",
+        "heatHelp": "Profile: %@ · thresholds %@ / %@ · macOS state: %@",
         "alertHeatState": "macOS has reported \"%@\" heat for several minutes.",
         "minSize": "Min size (MB)",
         "olderThan": "Older than (days)",
@@ -250,18 +255,19 @@ enum L {
         "showInFinder": "Show in Finder",
         "disable": "Disable",
         "delete": "Delete",
-        "thin": "Thin and purge",
+        "thin": "Free up",
         "confirm": "Confirm",
         "kept": "kept",
         "group": "Group %d · %d × %@",
         "loginItems": "Login items",
-        "agents": "Agents",
-        "daemons": "Daemons",
+        "agents": "Background tasks",
+        "daemons": "System services",
         "loaded": "loaded",
         "notLoaded": "not loaded",
-        "worktrees": "Git worktrees",
-        "unityLib": "Library/ of Unity projects",
-        "unityWarn": "Unity rebuilds it next time the project opens (all assets are reimported).",
+        "worktrees": "Unused project copies",
+        "unityLib": "Unity projects",
+        "unityWarn": "Unity project cache: frees space, but the next time the project opens will be slow (Unity rebuilds this cache).",
+        "emptyDev": "No development projects to clean up.",
         "startupNote": "Disabling removes the item (file moved to the Trash). An app may reinstall it.",
         "previewNote": "Preview: nothing has been done yet. Confirm to run it.",
         "doneNote": "Done. The list was read again.",
@@ -301,7 +307,7 @@ enum L {
         "alertDiskTitle": "Disk almost full",
         "alertDiskBody": "%@ left (%d %%).",
         "alertHeatTitle": "Mac running very hot",
-        "alertHeatBody": "The CPU has been at %.0f °C for several minutes.",
+        "alertHeatBody": "The CPU has been at %@ for several minutes.",
         "alertTrashTitle": "Large Trash",
         "alertTrashBody": "The Trash takes up %@.",
         "excluded": "excluded",
@@ -331,7 +337,7 @@ enum L {
         "trashInfo": "%@ · can be restored from the Trash.",
         "trashFailed": "Could not move to the Trash: %@",
         "trashed": "\u{201C}%@\u{201D} is in the Trash.",
-        "maintNote": "DNS cache, Spotlight index, \u{201C}Open With\u{201D} database and periodic scripts. Nothing is deleted.",
+        "maintNote": "Refreshes networking, file search, the \u{201C}Open With\u{201D} menu and macOS upkeep tasks. Nothing is deleted.",
         "maintSudo": "A single administrator password prompt for everything.",
         "maintFailed": "Maintenance cancelled or incomplete.",
         "privacyNote": "Browser history and cache, erased for good. Cookies are kept (otherwise you would be signed out of every site) and an open browser is skipped.",
@@ -364,11 +370,11 @@ enum L {
         "desc_downloads": "Forgotten downloads",
         "desc_duplicates": "Identical copies in a folder",
         "desc_startup": "What launches by itself",
-        "desc_dev": "Worktrees and Unity Library",
+        "desc_dev": "Unused project copies and caches",
         "desc_cachesAdv": "Every cache, your pick",
-        "desc_system": "Snapshots and binaries",
+        "desc_system": "Local backups and apps to slim down",
         "desc_diskmap": "Where the space goes",
-        "desc_maintenance": "DNS, Spotlight, scripts",
+        "desc_maintenance": "Network, search, upkeep tasks",
         "desc_privacy": "Browser history",
     ]
 }

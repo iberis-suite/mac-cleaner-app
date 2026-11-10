@@ -181,7 +181,7 @@ struct PanelView: View {
             }
             Text(u.name).font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
-            Text(usageMode == 0 ? String(format: "%.1f %%", u.cpu ?? 0) : L.human(bytes: u.memory))
+            Text(usageMode == 0 ? L.pct(u.cpu ?? 0) : L.human(bytes: u.memory))
                 .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
             if u.canQuit {
                 Button(L.t("quitApp")) { model.quitApp(u) }
@@ -214,7 +214,7 @@ struct PanelView: View {
 
     private var heatHelp: String {
         let p = ChipProfile.current
-        return String(format: L.t("heatHelp"), p.family, p.high, p.hot, Heat.label(Heat.level(model.thermalState)))
+        return String(format: L.t("heatHelp"), p.family, L.num(p.high, 0), L.deg(p.hot), Heat.label(Heat.level(model.thermalState)))
     }
 
     private var rings: some View {
@@ -236,7 +236,7 @@ struct PanelView: View {
             VStack(spacing: 6) {
                 let t = model.sensors.temperature
                 let (note, l) = heatNote
-                Ring(fraction: t.map { $0 / ChipProfile.current.hot }, value: t.map { String(format: "%.0f °C", $0) } ?? "—",
+                Ring(fraction: t.map { $0 / ChipProfile.current.hot }, value: t.map { L.deg($0) } ?? "—",
                      label: L.t("heat"), tint: l > 0 ? .level(l) : .accentBlue)
                 Text(note).font(.caption.weight(.semibold)).foregroundStyle(Color.level(l))
                 if let n = model.sensors.fanCount {
