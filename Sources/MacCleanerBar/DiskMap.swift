@@ -133,6 +133,12 @@ final class DiskMapModel: ObservableObject {
             return
         }
         let dir = current
+        if Demo.enabled {
+            entries = Demo.diskEntries(dir)
+            cache[dir.path] = entries
+            scanning = false
+            return
+        }
         scanning = true
         done = 0
         entries = []
@@ -180,6 +186,25 @@ final class DiskMapModel: ObservableObject {
         e.url.path.hasPrefix(NSHomeDirectory() + "/") && !scanning
     }
 
+    func back() -> Bool {
+        if scanning && trail.count == 1 {
+            stop()
+            return true
+        }
+        guard trail.count > 1 else { return false }
+        go(to: trail.count - 2)
+        return true
+    }
+
+    var backKey: String {
+        if trail.count > 1 { return "back" }
+        return scanning ? "cancel" : "home"
+    }
+
+    func appear() {
+        if !scanning && entries.isEmpty { load() }
+    }
+
     func trash(_ e: DiskEntry) {
         guard canTrash(e) else { return }
         let alert = NSAlert()
@@ -189,6 +214,10 @@ final class DiskMapModel: ObservableObject {
         alert.addButton(withTitle: L.t("toTrash"))
         alert.addButton(withTitle: L.t("cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if Demo.enabled {
+            message = L.t("demoNoAction")
+            return
+        }
         NSWorkspace.shared.recycle([e.url]) { [weak self] _, error in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -211,13 +240,11 @@ final class DiskMapModel: ObservableObject {
 
 struct DiskMapView: View {
     @ObservedObject var model: DiskMapModel
-    let close: () -> Void
+    let home: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(L.t("diskmap")).font(.system(size: 18, weight: .bold, design: .rounded))
-                Spacer()
+            ToolHeader(title: L.t("diskmap"), backTitle: L.t(model.backKey), back: { if !model.back() { home() } }) {
                 Picker("", selection: Binding(get: { model.fromRoot }, set: { model.setRoot($0) })) {
                     Text(L.t("homeFolder")).tag(false)
                     Text("Macintosh HD").tag(true)
@@ -232,7 +259,7 @@ struct DiskMapView: View {
             if let m = model.message {
                 Text(m).font(.caption).foregroundStyle(model.failed ? Color.red : Color.secondary).lineLimit(2)
             }
-            HStack {
+            HStack(spacing: 10) {
                 Text(L.human(bytes: model.currentSize)).font(.system(size: 12, weight: .semibold)).monospacedDigit()
                 if model.scanning {
                     ProgressView().controlSize(.small)
@@ -241,15 +268,13 @@ struct DiskMapView: View {
                 }
                 Spacer()
                 if model.scanning {
-                    Button(L.t("cancel")) { model.stop() }
+                    SecondaryButton(title: L.t("cancel")) { model.stop() }
                 }
-                Button(L.t("close")) { close() }.keyboardShortcut(.cancelAction)
             }
-            .controlSize(.large)
+            .frame(minHeight: 32)
         }
-        .padding(18)
-        .frame(width: 520, height: 640)
-        .background(.ultraThinMaterial)
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var breadcrumb: some View {
@@ -341,43 +366,5 @@ struct DiskMapView: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
-    }
-}
-
-@MainActor
-final class DiskMapWindow: NSObject, NSWindowDelegate {
-    private var panel: NSPanel?
-    private var model: DiskMapModel?
-
-    func show() {
-        if let panel {
-            if model?.scanning == false { model?.load() }
-            NSApp.activate(ignoringOtherApps: true)
-            panel.makeKeyAndOrderFront(nil)
-            return
-        }
-        let m = DiskMapModel()
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 640),
-                        styleMask: [.titled, .closable, .fullSizeContentView],
-                        backing: .buffered, defer: false)
-        p.titlebarAppearsTransparent = true
-        p.titleVisibility = .hidden
-        p.isMovableByWindowBackground = true
-        p.isFloatingPanel = true
-        p.level = .floating
-        p.hidesOnDeactivate = false
-        p.isReleasedWhenClosed = false
-        p.delegate = self
-        p.contentView = NSHostingView(rootView: DiskMapView(model: m) { [weak p] in p?.close() })
-        p.center()
-        panel = p
-        model = m
-        m.load()
-        NSApp.activate(ignoringOtherApps: true)
-        p.makeKeyAndOrderFront(nil)
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        model?.stop()
     }
 }

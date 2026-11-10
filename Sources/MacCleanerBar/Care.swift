@@ -13,6 +13,7 @@ final class CareModel: ObservableObject {
     @Published var finished = false
     @Published var message: String?
     @Published var failed = false
+    @Published var confirming = false
     var onChange: (() -> Void)?
     private var run: CLIRun?
     private var generation = 0
@@ -45,8 +46,15 @@ final class CareModel: ObservableObject {
         }
         if isMaintenance {
             loading = true
-            run = CLIRun.start(cli: cli, args: ["maintenance", "--list"]) { [weak self] text, _ in
+            run = CLIRun.start(cli: cli, args: ["maintenance", "--list"]) { [weak self] text, status in
                 guard let self, self.generation == gen else { return }
+                guard status == 0 else {
+                    self.loading = false
+                    self.failed = true
+                    self.output = ToolModel.clean(text)
+                    self.message = UninstallModel.summary(text, status: status)
+                    return
+                }
                 self.tasks = ToolItem.parseList(text)
                 self.selected = Set(self.tasks.filter { $0.index > 0 }.map(\.index))
                 self.preview()
@@ -83,14 +91,20 @@ final class CareModel: ObservableObject {
             self.output = ToolModel.clean(text)
             if status != 0 {
                 self.failed = true
-                self.message = String(format: L.t("exitCode"), status)
+                self.message = UninstallModel.summary(text, status: status)
             } else {
                 self.message = L.t("previewNote") + (self.isMaintenance ? " " + L.t("maintSudo") : "")
             }
         }
     }
 
+    func ask() {
+        guard canRun else { return }
+        if isMaintenance { act() } else { confirming = true }
+    }
+
     func act() {
+        confirming = false
         guard canRun, let cli = cliPath else { return }
         working = true
         message = nil
@@ -107,6 +121,15 @@ final class CareModel: ObservableObject {
     }
 
     private func runMaintenance(cli: String) {
+        if Demo.enabled {
+            run = CLIRun.start(cli: cli, args: ["maintenance", "--yes", "--select", selectArg],
+                               output: { [weak self] t in self?.output = ToolModel.clean(t) }) { [weak self] text, status in
+                guard let self else { return }
+                self.output = ToolModel.clean(text)
+                self.finish(ok: status == 0, error: L.t("maintFailed"))
+            }
+            return
+        }
         let hist = Model.historyPath
         let fm = FileManager.default
         try? fm.createDirectory(atPath: (hist as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
@@ -138,11 +161,46 @@ final class CareModel: ObservableObject {
         finished = true
         failed = !ok
         message = ok ? L.t("done") : error
+        Hub.finished(tool, ok: ok)
         onChange?()
     }
 
+    func cancel() {
+        guard loading, !working else { return }
+        generation += 1
+        run?.cancel()
+        run = nil
+        loading = false
+        output = ""
+        failed = false
+        message = L.t("cancelled")
+    }
+
+    func back() -> Bool {
+        if working { return false }
+        if loading {
+            cancel()
+            return true
+        }
+        if finished {
+            reload()
+            return true
+        }
+        return false
+    }
+
+    var backKey: String {
+        if working { return "home" }
+        if loading { return "cancel" }
+        return finished ? "back" : "home"
+    }
+
+    func appear() {
+        if !working && !loading && (output.isEmpty || finished) { reload() }
+    }
+
     func stop() {
-        if !working { run?.cancel() }
+        if !working { cancel() }
     }
 
     nonisolated static func quote(_ s: String) -> String {
@@ -156,42 +214,51 @@ final class CareModel: ObservableObject {
 
 struct CareView: View {
     @ObservedObject var model: CareModel
-    let close: () -> Void
+    let home: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(L.t(model.tool)).font(.system(size: 18, weight: .bold, design: .rounded))
+            ToolHeader(title: L.t(model.tool), backTitle: L.t(model.backKey), back: { if !model.back() { home() } }) {
+                EmptyView()
+            }
             Text(L.t(model.isMaintenance ? "maintNote" : "privacyNote"))
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if model.isMaintenance { taskList }
             outputBox
             if let m = model.message {
-                Text(m).font(.caption).foregroundStyle(model.failed ? Color.red : Color.secondary).lineLimit(3)
-            }
-            HStack {
-                Spacer()
-                Button(L.t("close")) { close() }.keyboardShortcut(.cancelAction)
-                Button { model.act() } label: {
-                    Group {
-                        if model.working { ProgressView().controlSize(.small) }
-                        else { Text(L.t(model.isMaintenance ? "runTasks" : "clean")) }
-                    }
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 7)
-                    .background((model.isMaintenance ? Color.accentBlue : Color.red).opacity(model.canRun ? 1 : 0.4),
-                                in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .contentShape(Rectangle())
+                if model.failed {
+                    ErrorNote(summary: m, detail: model.output)
+                } else {
+                    Text(m).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                 }
-                .buttonStyle(.plain)
-                .disabled(!model.canRun)
             }
-            .controlSize(.large)
+            Group {
+                if model.working {
+                    RunningNote(text: L.t("keepRunning"))
+                } else {
+                    HStack(spacing: 10) {
+                        Spacer()
+                        if model.finished {
+                            BlueButton(title: L.t("done")) { _ = model.back() }.keyboardShortcut(.defaultAction)
+                        } else {
+                            if model.loading { SecondaryButton(title: L.t("cancel")) { model.cancel() } }
+                            BlueButton(title: L.t(model.isMaintenance ? "runTasks" : "clean") + (model.isMaintenance ? "" : "…"),
+                                       enabled: model.canRun, destructive: !model.isMaintenance) { model.ask() }
+                                .keyboardShortcut(.defaultAction)
+                        }
+                    }
+                }
+            }
+            .frame(minHeight: 32)
         }
-        .padding(18)
-        .frame(width: 480, height: model.isMaintenance ? 600 : 560)
-        .background(.ultraThinMaterial)
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .alert(L.t("privacyAsk"), isPresented: $model.confirming) {
+            Button(L.t("clean"), role: .destructive) { model.act() }
+            Button(L.t("cancel"), role: .cancel) {}
+        } message: {
+            Text(L.t("privacyInfo"))
+        }
     }
 
     private var taskList: some View {
@@ -255,54 +322,5 @@ struct CareView: View {
         .overlay(alignment: .topTrailing) {
             if model.loading { ProgressView().controlSize(.small).padding(8) }
         }
-    }
-}
-
-@MainActor
-final class CareWindow: NSObject, NSWindowDelegate {
-    private var panel: NSPanel?
-    private var model: CareModel?
-    private let tool: String
-    private let cliPath: String?
-    private let onChange: () -> Void
-
-    init(tool: String, cliPath: String?, onChange: @escaping () -> Void) {
-        self.tool = tool
-        self.cliPath = cliPath
-        self.onChange = onChange
-    }
-
-    func show() {
-        if let panel {
-            if model?.working != true { model?.reload() }
-            NSApp.activate(ignoringOtherApps: true)
-            panel.makeKeyAndOrderFront(nil)
-            return
-        }
-        let m = CareModel(tool: tool, cliPath: cliPath)
-        m.onChange = onChange
-        let h: CGFloat = tool == "maintenance" ? 600 : 560
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 480, height: h),
-                        styleMask: [.titled, .closable, .fullSizeContentView],
-                        backing: .buffered, defer: false)
-        p.titlebarAppearsTransparent = true
-        p.titleVisibility = .hidden
-        p.isMovableByWindowBackground = true
-        p.isFloatingPanel = true
-        p.level = .floating
-        p.hidesOnDeactivate = false
-        p.isReleasedWhenClosed = false
-        p.delegate = self
-        p.contentView = NSHostingView(rootView: CareView(model: m) { [weak p] in p?.close() })
-        p.center()
-        panel = p
-        model = m
-        m.reload()
-        NSApp.activate(ignoringOtherApps: true)
-        p.makeKeyAndOrderFront(nil)
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        model?.stop()
     }
 }

@@ -138,7 +138,7 @@ final class ToolModel: ObservableObject {
             }
             if status != 0 {
                 self.failed = true
-                self.message = UninstallModel.lastMeaningfulLine(text)
+                self.message = UninstallModel.summary(text, status: status)
             }
         }
     }
@@ -159,7 +159,7 @@ final class ToolModel: ObservableObject {
         guard let cli = cliPath, !busy, hasSelection else { return }
         switch stage {
         case .preview:
-            if needsSudo && CLIRun.askpassPath == nil {
+            if needsSudo && CLIRun.askpassPath == nil && !Demo.enabled {
                 message = L.t("noAskpass")
                 return
             }
@@ -171,7 +171,8 @@ final class ToolModel: ObservableObject {
                 self.output = ToolModel.clean(text)
                 self.stage = .done
                 self.failed = status != 0
-                self.message = status == 0 ? L.t("doneNote") : String(format: L.t("exitCode"), status)
+                self.message = status == 0 ? L.t("doneNote") : UninstallModel.summary(text, status: status)
+                Hub.finished(self.tool, ok: status == 0)
                 if self.tool != "system" { self.selected = [] }
                 self.onChange?()
                 if self.tool != "system" { self.load(keepOutput: true) }
@@ -184,13 +185,15 @@ final class ToolModel: ObservableObject {
             }
             stage = .previewing
             message = nil
+            generation += 1
+            let gen = generation
             run = CLIRun.start(cli: cli, args: [command, "--dry-run"] + selectArgs + params) { [weak self] text, status in
-                guard let self else { return }
+                guard let self, self.generation == gen else { return }
                 self.output = ToolModel.clean(text)
                 self.stage = status == 0 ? .preview : .idle
                 self.failed = status != 0
                 self.message = status == 0 ? L.t("previewNote") + (self.needsSudo ? " " + L.t("sudoNote") : "")
-                    : String(format: L.t("exitCode"), status)
+                    : UninstallModel.summary(text, status: status)
             }
         }
     }
@@ -215,19 +218,61 @@ final class ToolModel: ObservableObject {
         }
     }
 
-    func stop() {
+    func cancel() {
+        guard stage != .working else { return }
+        let wasBusy = listing || stage == .previewing
+        generation += 1
         run?.cancel()
+        run = nil
         listing = false
+        if stage == .previewing {
+            stage = .idle
+            output = ""
+        }
+        if wasBusy {
+            failed = false
+            message = L.t("cancelled")
+        }
+    }
+
+    func back() -> Bool {
+        switch stage {
+        case .working: return false
+        case .previewing: cancel()
+        case .preview, .done: cancelPreview()
+        case .idle, .loading:
+            guard listing else { return false }
+            cancel()
+        }
+        return true
+    }
+
+    var backKey: String {
+        switch stage {
+        case .previewing: return "cancel"
+        case .preview, .done: return "back"
+        default: return listing ? "cancel" : "home"
+        }
+    }
+
+    func appear() {
+        if stage == .idle && !listing { load() }
+    }
+
+    func stop() {
+        if stage != .working { cancel() }
     }
 }
 
 struct ToolView: View {
     @ObservedObject var model: ToolModel
-    let close: () -> Void
+    let home: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(L.t(model.tool)).font(.system(size: 18, weight: .bold, design: .rounded))
+            ToolHeader(title: L.t(model.tool), backTitle: L.t(model.backKey), back: { if !model.back() { home() } }) {
+                if model.listing && !model.items.isEmpty { ProgressView().controlSize(.small) }
+            }
             header
             if model.tool == "system" {
                 outputBox(maxHeight: .infinity)
@@ -239,13 +284,16 @@ struct ToolView: View {
                 }
             }
             if let message = model.message {
-                Text(message).font(.caption).foregroundStyle(model.failed ? Color.red : Color.secondary).lineLimit(3)
+                if model.failed {
+                    ErrorNote(summary: message, detail: model.output)
+                } else {
+                    Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                }
             }
             footer
         }
-        .padding(18)
-        .frame(width: 480, height: 620)
-        .background(.ultraThinMaterial)
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder
@@ -300,10 +348,17 @@ struct ToolView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 2) {
                 if model.listing && model.items.isEmpty {
-                    HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }.padding(.vertical, 30)
+                    VStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(L.t("analyzing")).font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity).padding(.vertical, 40)
                 } else if model.items.isEmpty {
-                    Text(L.t("nothing")).font(.callout).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity).padding(.vertical, 30)
+                    if model.failed || model.message == L.t("cancelled") {
+                        Color.clear.frame(height: 80)
+                    } else {
+                        EmptyNote(text: L.t(model.tool == "startup" ? "emptyStartup" : "nothingFound"))
+                    }
                 } else {
                     switch model.tool {
                     case "duplicates": duplicateGroups
@@ -319,9 +374,6 @@ struct ToolView: View {
         }
         .frame(maxHeight: .infinity)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(alignment: .topTrailing) {
-            if model.listing && !model.items.isEmpty { ProgressView().controlSize(.small).padding(8) }
-        }
     }
 
     private func sectionTitle(_ text: String) -> some View {
@@ -491,7 +543,7 @@ struct ToolView: View {
         ScrollViewReader { proxy in
             ScrollView([.horizontal, .vertical]) {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(model.output.isEmpty ? L.t("running") : model.output)
+                    Text(model.output.isEmpty ? L.t(model.listing ? "running" : "noOutput") : model.output)
                         .font(.system(size: 10.5, design: .monospaced))
                         .fixedSize(horizontal: true, vertical: true)
                         .textSelection(.enabled)
@@ -509,86 +561,43 @@ struct ToolView: View {
     }
 
     private var footer: some View {
-        HStack {
-            if model.tool != "system" {
-                Text(String(format: L.t("selection"), L.human(kb: model.selectedKB)))
-                    .font(.system(size: 12, weight: .semibold)).monospacedDigit()
-            }
-            Spacer()
-            if model.stage == .preview {
-                Button(L.t("cancel")) { model.cancelPreview() }
+        Group {
+            if model.stage == .working {
+                RunningNote(text: L.t("keepRunning"))
             } else {
-                Button(L.t("close")) { close() }.keyboardShortcut(.cancelAction)
-            }
-            let disabled = model.busy || !model.hasSelection || model.cliPath == nil
-                || (model.tool == "system" && model.output.isEmpty)
-            Button(role: .destructive) { model.act() } label: {
-                Group {
-                    if model.stage == .previewing || model.stage == .working {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Text(model.stage == .preview ? "\(L.t("confirm")) · \(model.actionLabel)" : model.actionLabel)
+                HStack(spacing: 10) {
+                    if model.tool != "system" {
+                        Text(String(format: L.t("selection"), L.human(kb: model.selectedKB)))
+                            .font(.system(size: 12, weight: .semibold)).monospacedDigit()
                     }
+                    Spacer()
+                    buttons
                 }
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 7)
-                .background(Color.red.opacity(disabled ? 0.4 : 1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .disabled(disabled)
         }
-        .controlSize(.large)
-    }
-}
-
-@MainActor
-final class ToolWindow: NSObject, NSWindowDelegate {
-    private var panel: NSPanel?
-    private var model: ToolModel?
-    private let tool: String
-    private let cliPath: String?
-    private let onChange: () -> Void
-
-    init(tool: String, cliPath: String?, onChange: @escaping () -> Void) {
-        self.tool = tool
-        self.cliPath = cliPath
-        self.onChange = onChange
+        .frame(minHeight: 32)
     }
 
-    func show() {
-        if let panel {
-            if model?.busy != true { model?.load() }
-            NSApp.activate(ignoringOtherApps: true)
-            panel.makeKeyAndOrderFront(nil)
-            return
+    @ViewBuilder
+    private var buttons: some View {
+        let ready = model.hasSelection && model.cliPath != nil && !(model.tool == "system" && model.output.isEmpty)
+        switch model.stage {
+        case .done:
+            BlueButton(title: L.t("done")) { model.cancelPreview() }.keyboardShortcut(.defaultAction)
+        case .preview:
+            SecondaryButton(title: L.t("cancel")) { model.cancelPreview() }
+            BlueButton(title: "\(L.t("confirm")) · \(model.actionLabel)", enabled: ready && !model.listing, destructive: true) {
+                model.act()
+            }
+            .keyboardShortcut(.defaultAction)
+        case .previewing:
+            SecondaryButton(title: L.t("cancel")) { model.cancel() }
+            BlueButton(title: L.t("preview"), busy: true) {}
+        default:
+            if model.listing { SecondaryButton(title: L.t("cancel")) { model.cancel() } }
+            BlueButton(title: model.tool == "system" ? model.actionLabel + "…" : "\(L.t("preview")) · \(model.actionLabel)",
+                       enabled: ready && !model.busy) { model.act() }
+                .keyboardShortcut(.defaultAction)
         }
-        let m = ToolModel(tool: tool, cliPath: cliPath)
-        m.onChange = onChange
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 480, height: 620),
-                        styleMask: [.titled, .closable, .fullSizeContentView],
-                        backing: .buffered, defer: false)
-        p.titlebarAppearsTransparent = true
-        p.titleVisibility = .hidden
-        p.isMovableByWindowBackground = true
-        p.isFloatingPanel = true
-        p.level = .floating
-        p.hidesOnDeactivate = false
-        p.isReleasedWhenClosed = false
-        p.delegate = self
-        p.contentView = NSHostingView(rootView: ToolView(model: m) { [weak p] in p?.close() })
-        p.center()
-        panel = p
-        model = m
-        m.load()
-        NSApp.activate(ignoringOtherApps: true)
-        p.makeKeyAndOrderFront(nil)
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        guard let model else { return }
-        if model.stage != .working { model.stop() }
     }
 }

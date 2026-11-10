@@ -28,6 +28,7 @@ enum Phase: Equatable {
 final class CLIRun {
     private let process = Process()
     private var data = Data()
+    private var demoFinish: ((String, Int32) -> Void)?
 
     static var askpassPath: String? {
         guard let p = Bundle.main.path(forResource: "askpass", ofType: nil),
@@ -52,6 +53,24 @@ final class CLIRun {
     static func start(cli: String, args: [String], askpass: Bool = false, output: ((String) -> Void)? = nil,
                       completion: @escaping (String, Int32) -> Void) -> CLIRun {
         let run = CLIRun()
+        if Demo.enabled {
+            run.demoFinish = completion
+            let (text, status) = Demo.respond(args)
+            let delay = args.contains("--yes") ? 2.0 : 0.6
+            if let output {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay / 2) {
+                    guard run.demoFinish != nil else { return }
+                    output(text.components(separatedBy: "\n").prefix(3).joined(separator: "\n"))
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard let finish = run.demoFinish else { return }
+                run.demoFinish = nil
+                output?(text)
+                finish(text, status)
+            }
+            return run
+        }
         let p = run.process
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
         p.arguments = [cli] + args
@@ -88,6 +107,11 @@ final class CLIRun {
     }
 
     func cancel() {
+        if let finish = demoFinish {
+            demoFinish = nil
+            DispatchQueue.main.async { finish("", 15) }
+            return
+        }
         if process.isRunning { process.terminate() }
     }
 }
@@ -136,6 +160,10 @@ final class Model: ObservableObject {
     private var activityTimer: Timer?
     private let sampler = ProcSampler()
     private var current: CLIRun?
+    private var detailsRun: CLIRun?
+    private var runToken = 0
+    private var previewGeneration = 0
+    private var panelObserver: NSObjectProtocol?
     private var lastEstimate: Date?
     private var thermalObserver: NSObjectProtocol?
 
@@ -147,9 +175,12 @@ final class Model: ObservableObject {
         cliPath = Model.findCLI()
         launchAtLogin = SMAppService.mainApp.status == .enabled
         weeklyEnabled = WeeklyJob.isInstalled
-        battery = Battery.read()
+        battery = Demo.enabled ? nil : Battery.read()
         AlertCenter.shared.onOpen = { [weak self] in
             Task { @MainActor in StatusItemOpener.open(panel: self?.panelWindow) }
+        }
+        AlertCenter.shared.onOpenTool = { [weak self] tool in
+            Task { @MainActor in if let self { Windows.open(tool, model: self) } }
         }
         AlertCenter.shared.setUp(enabled: alertsEnabled)
         thermalObserver = NotificationCenter.default.addObserver(
@@ -232,6 +263,10 @@ final class Model: ObservableObject {
     }
 
     func refresh() {
+        if Demo.enabled {
+            Demo.fill(self)
+            return
+        }
         readDisk()
         readHistory()
         launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -252,7 +287,7 @@ final class Model: ObservableObject {
     func panelOpened() {
         refresh()
         refreshEstimates(force: false)
-        battery = Battery.read()
+        if !Demo.enabled { battery = Battery.read() }
         startActivity()
     }
 
@@ -290,6 +325,11 @@ final class Model: ObservableObject {
     }
 
     private func sampleActivity() {
+        if Demo.enabled {
+            topCPU = Demo.usages(byCPU: true)
+            topMemory = Demo.usages(byCPU: false)
+            return
+        }
         let apps = NSWorkspace.shared.runningApplications.filter {
             $0.activationPolicy == .regular && !$0.isTerminated && $0.processIdentifier != getpid()
         }
@@ -310,7 +350,7 @@ final class Model: ObservableObject {
     }
 
     func quitApp(_ usage: AppUsage) {
-        guard usage.canQuit, let app = NSRunningApplication(processIdentifier: usage.pid) else { return }
+        guard !Demo.enabled, usage.canQuit, let app = NSRunningApplication(processIdentifier: usage.pid) else { return }
         app.terminate()
     }
 
@@ -322,6 +362,10 @@ final class Model: ObservableObject {
     }
 
     func setWeekly(_ on: Bool) {
+        if Demo.enabled {
+            weeklyEnabled = on
+            return
+        }
         if on {
             if let cli = cliPath { WeeklyJob.enable(cli: cli, lang: L.fr ? "fr" : "en") }
         } else {
@@ -454,6 +498,7 @@ final class Model: ObservableObject {
 
     static func findCLI() -> String? {
         let fm = FileManager.default
+        if Demo.enabled { return "demo" }
         if let env = ProcessInfo.processInfo.environment["MAC_CLEANER_BIN"], fm.fileExists(atPath: env) {
             return env
         }
@@ -473,9 +518,11 @@ final class Model: ObservableObject {
         sheetError = nil
         result = nil
         detailsKey = nil
+        previewGeneration += 1
+        let gen = previewGeneration
         phase = .previewing(command)
         run([command, "--list"], live: false) { [weak self] in
-            guard let self else { return }
+            guard let self, self.previewGeneration == gen else { return }
             if self.exitStatus == 0 {
                 self.sheetItems = ToolItem.parseList(self.output)
                 self.sheetSelected = Set(Model.defaultSelection(self.sheetItems).filter { $0.kb > 0 }.map(\.index))
@@ -496,20 +543,20 @@ final class Model: ObservableObject {
         detailsKey = key
         detailsLoading = true
         output = ""
-        current = CLIRun.start(cli: cli, args: args, output: { [weak self] text in
-            self?.output = text
+        detailsRun = CLIRun.start(cli: cli, args: args, output: { [weak self] text in
+            guard let self, self.detailsKey == key, self.detailsLoading else { return }
+            self.output = text
         }, completion: { [weak self] text, _ in
-            guard let self else { return }
+            guard let self, self.detailsKey == key, self.detailsLoading else { return }
             self.output = text
             self.detailsLoading = false
-            self.current = nil
+            self.detailsRun = nil
         })
     }
 
     func clean() {
         guard case .previewReady(let command) = phase, canClean else { return }
-        current?.cancel()
-        detailsLoading = false
+        cancelDetails()
         let args = [command, "--yes"] + selectArgs(command)
         let chosen = Model.selectable.contains(command)
             ? sheetItems.filter { $0.index > 0 && sheetSelected.contains($0.index) }
@@ -538,14 +585,59 @@ final class Model: ObservableObject {
             self.phase = .cleaned(command)
             self.refresh()
             self.refreshEstimates(force: true)
+            if !self.panelVisible {
+                AlertCenter.shared.notify(
+                    title: String(format: L.t(ok ? "notifyDone" : "notifyFailed"), L.t(command)),
+                    body: ok ? String(format: L.t("freedAmount"), L.human(kb: freed)) : L.t("notifyOpen"))
+            }
         }
+    }
+
+    func back() {
+        switch phase {
+        case .previewing:
+            previewGeneration += 1
+            runToken += 1
+            let run = current
+            current = nil
+            run?.cancel()
+            phase = .idle
+            dismiss()
+        case .previewReady, .cleaned:
+            dismiss()
+        case .cleaning, .idle:
+            break
+        }
+    }
+
+    func cancelDetails() {
+        guard detailsLoading else { return }
+        let run = detailsRun
+        detailsRun = nil
+        detailsLoading = false
+        detailsKey = nil
+        run?.cancel()
+    }
+
+    func attachPanel(_ window: NSWindow?) {
+        guard let window, window !== panelWindow else { return }
+        panelWindow = window
+        if let panelObserver { NotificationCenter.default.removeObserver(panelObserver) }
+        panelObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.panelClosed() }
+        }
+    }
+
+    func panelClosed() {
+        if case .previewing = phase { back() }
+        cancelDetails()
     }
 
     func dismiss() {
         guard !busy else { return }
-        current?.cancel()
-        current = nil
-        detailsLoading = false
+        cancelDetails()
         detailsKey = nil
         phase = .idle
         output = ""
@@ -564,10 +656,13 @@ final class Model: ObservableObject {
             completion()
             return
         }
+        runToken += 1
+        let token = runToken
         current = CLIRun.start(cli: cli, args: args, output: live ? { [weak self] text in
-            self?.output = text
+            guard let self, self.runToken == token else { return }
+            self.output = text
         } : nil, completion: { [weak self] text, status in
-            guard let self else { return }
+            guard let self, self.runToken == token else { return }
             self.output = text
             self.exitStatus = status
             self.current = nil
@@ -587,6 +682,14 @@ final class Model: ObservableObject {
         guard !busy else { return }
         purging = true
         notice = nil
+        if Demo.enabled {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                guard let self else { return }
+                self.purging = false
+                self.notice = String(format: L.t("ramDone"), 18, 41)
+            }
+            return
+        }
         Thread.detachNewThread { [weak self] in
             let before = Model.readMemFree()
             var error: NSDictionary?
@@ -632,6 +735,10 @@ final class Model: ObservableObject {
     }
 
     func setLaunchAtLogin(_ on: Bool) {
+        if Demo.enabled {
+            launchAtLogin = on
+            return
+        }
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch {}

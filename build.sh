@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 cd "${0:A:h}"
-VERSION=1.3.0
+VERSION=1.3.1
 APP="build/Mac Cleaner.app"
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)/MacCleanerBar"
@@ -35,9 +35,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 IDENTITY=$(security find-identity -v -p codesigning | awk -F'"' '/Developer ID Application/{print $2; exit}')
+xattr -cr "$APP"
+SCRIPTS=( "$APP/Contents/Resources/mac-cleaner" "$APP/Contents/Resources/askpass" )
 if [[ -n $IDENTITY ]]; then
+  codesign --force --options runtime --timestamp --sign "$IDENTITY" $SCRIPTS
   codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
 else
+  codesign --force --sign - $SCRIPTS
   codesign --force --sign - "$APP"
 fi
 codesign --verify --strict "$APP"

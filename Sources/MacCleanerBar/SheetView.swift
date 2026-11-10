@@ -197,20 +197,143 @@ struct DetailsBox: View {
 struct BlueButton: View {
     let title: String
     var enabled = true
+    var destructive = false
+    var busy = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Text(title).opacity(busy ? 0 : 1)
+                if busy { ProgressView().controlSize(.small) }
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 7)
+            .background((destructive ? Color.red : Color.accentBlue).opacity(enabled && !busy ? 1 : 0.4),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled || busy)
+    }
+}
+
+struct SecondaryButton: View {
+    let title: String
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 8)
-                .background(Color.accentBlue.opacity(enabled ? 1 : 0.4), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .font(.system(size: 13))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!enabled)
+    }
+}
+
+struct BackButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
+                Text(title).font(.system(size: 12, weight: .medium))
+            }
+            .foregroundStyle(Color.accentBlue)
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct ToolHeader<Trailing: View>: View {
+    let title: String
+    let backTitle: String
+    let back: () -> Void
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            BackButton(title: backTitle, action: back)
+            HStack(alignment: .firstTextBaseline) {
+                Text(title).font(.system(size: 20, weight: .bold, design: .rounded)).lineLimit(1)
+                Spacer(minLength: 8)
+                trailing
+            }
+        }
+    }
+}
+
+struct RunningNote: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(text).font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+struct ErrorNote: View {
+    let summary: String
+    var detail = ""
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(.orange)
+                Text(summary.isEmpty ? L.t("cleanFailed") : summary)
+                    .font(.system(size: 12, weight: .medium)).lineLimit(2)
+                Spacer(minLength: 0)
+                if !detail.isEmpty {
+                    Button { open.toggle() } label: {
+                        HStack(spacing: 3) {
+                            Text(L.t("details"))
+                            Image(systemName: "chevron.right").rotationEffect(.degrees(open ? 90 : 0))
+                        }
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            if open {
+                ScrollView([.horizontal, .vertical]) {
+                    Text(detail).font(.system(size: 10, design: .monospaced))
+                        .fixedSize(horizontal: true, vertical: true).textSelection(.enabled).padding(8)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+                .frame(height: 110)
+                .background(Color.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+struct EmptyNote: View {
+    var text = L.t("nothingToClean")
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Image(systemName: "checkmark.circle").font(.system(size: 24)).foregroundStyle(Color.green)
+            Text(text).font(.system(size: 12)).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40)
     }
 }
 
@@ -225,6 +348,13 @@ struct PreviewSheet: View {
     }
 
     private var checkable: Bool { Model.selectable.contains(command) }
+
+    private var isPreviewing: Bool {
+        if case .previewing = model.phase { return true }
+        return false
+    }
+
+    private var destructive: Bool { command == "trash" || command == "auto" }
 
     private var rows: [ToolItem] { model.sheetItems.filter { $0.index > 0 } }
 
@@ -241,6 +371,12 @@ struct PreviewSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if case .cleaning = model.phase {
+                Text(" ").font(.system(size: 12)).padding(.vertical, 2).hidden()
+            } else {
+                BackButton(title: L.t(isPreviewing ? "cancel" : "back")) { model.back() }
+                    .keyboardShortcut(.cancelAction)
+            }
             HStack(spacing: 8) {
                 Image(systemName: ItemStyle.command(command))
                     .font(.system(size: 13, weight: .medium))
@@ -256,7 +392,7 @@ struct PreviewSheet: View {
                 waiting(L.t("analyzing"))
             case .previewReady:
                 if let error = model.sheetError {
-                    errorCard(error)
+                    ErrorNote(summary: error)
                 } else {
                     listCard
                     if !skipped.isEmpty { SkippedRow(items: skipped) }
@@ -267,12 +403,14 @@ struct PreviewSheet: View {
             case .cleaning:
                 waiting(L.t("cleaning"))
                 DetailsBox(text: model.output, loading: true)
+                Text(L.t("keepRunningPanel")).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             case .cleaned:
                 resultView
                 DetailsBox(text: model.output)
                 HStack {
                     Spacer()
-                    BlueButton(title: L.t("close")) { model.dismiss() }.keyboardShortcut(.defaultAction)
+                    BlueButton(title: L.t("done")) { model.dismiss() }.keyboardShortcut(.defaultAction)
                 }
             case .idle:
                 EmptyView()
@@ -287,20 +425,6 @@ struct PreviewSheet: View {
                 Text(text).font(.system(size: 12)).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, minHeight: 150)
-        }
-    }
-
-    private func errorCard(_ text: String) -> some View {
-        Card {
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(String(format: L.t("exitCode"), model.exitStatus)).font(.system(size: 12, weight: .semibold))
-                    Text(text).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(4)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(10)
         }
     }
 
@@ -368,12 +492,8 @@ struct PreviewSheet: View {
                     .lineLimit(1).minimumScaleFactor(0.7)
             }
             Spacer()
-            Button(L.t("cancel")) { model.dismiss() }
-                .buttonStyle(.plain)
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .keyboardShortcut(.cancelAction)
-            BlueButton(title: L.t("clean"), enabled: model.canClean) { model.clean() }
+            SecondaryButton(title: L.t("cancel")) { model.back() }
+            BlueButton(title: L.t("clean"), enabled: model.canClean, destructive: destructive) { model.clean() }
                 .keyboardShortcut(.defaultAction)
         }
     }
@@ -390,7 +510,7 @@ struct PreviewSheet: View {
                         .font(.system(size: 22, weight: .bold, design: .rounded)).monospacedDigit()
                     if !r.ok {
                         Text(r.message).font(.system(size: 11)).foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center).lineLimit(3)
+                            .multilineTextAlignment(.center).lineLimit(2)
                     }
                     if r.ok && !r.sections.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {

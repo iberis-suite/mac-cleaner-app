@@ -49,12 +49,7 @@ struct PanelView: View {
     private let shortcuts: [(String, String)] = [
         ("ram", "memorychip"), ("temp", "trash"), ("caches", "square.stack.3d.up"), ("trash", "xmark.bin"),
     ]
-    private let tools: [(String, String)] = [
-        ("uninstall", "xmark.app"), ("large", "doc.richtext"), ("downloads", "arrow.down.circle"),
-        ("duplicates", "doc.on.doc"), ("startup", "power"), ("dev", "chevron.left.forwardslash.chevron.right"),
-        ("cachesAdv", "square.stack.3d.down.right"), ("system", "gearshape.2"),
-        ("diskmap", "chart.pie"), ("maintenance", "wrench.and.screwdriver"), ("privacy", "hand.raised"),
-    ]
+    private var tools: [(String, String)] { Catalog.tools }
 
     var body: some View {
         VStack(spacing: 14) {
@@ -76,7 +71,7 @@ struct PanelView: View {
         .padding(16)
         .frame(width: 360)
         .background(.ultraThinMaterial)
-        .background(WindowReader { model.panelWindow = $0 })
+        .background(WindowReader { model.attachPanel($0) })
         .onAppear { model.panelOpened() }
     }
 
@@ -321,7 +316,7 @@ struct PanelView: View {
     private var toolsGrid: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(L.t("tools")).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 10) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4, alignment: .top), count: 4), spacing: 10) {
                 ForEach(tools, id: \.0) { item in
                     Button {
                         openTool(item.0)
