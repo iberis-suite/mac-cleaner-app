@@ -5,6 +5,7 @@ import UserNotifications
 final class AlertCenter: NSObject, UNUserNotificationCenterDelegate {
     static let shared = AlertCenter()
     var onOpen: (() -> Void)?
+    var onOpenTool: ((String) -> Void)?
 
     static var available: Bool {
         Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app"
@@ -34,6 +35,17 @@ final class AlertCenter: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().add(request)
     }
 
+    func notify(title: String, body: String, tool: String? = nil) {
+        guard AlertCenter.available else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        if let tool { content.userInfo = ["tool": tool] }
+        let request = UNNotificationRequest(identifier: "mac-cleaner.done.\(UUID().uuidString)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+    }
+
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .sound])
@@ -41,8 +53,12 @@ final class AlertCenter: NSObject, UNUserNotificationCenterDelegate {
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
+        let tool = response.notification.request.content.userInfo["tool"] as? String
         let open = onOpen
-        DispatchQueue.main.async { open?() }
+        let openTool = onOpenTool
+        DispatchQueue.main.async {
+            if let tool, let openTool { openTool(tool) } else { open?() }
+        }
         completionHandler()
     }
 }
@@ -135,9 +151,15 @@ extension Model {
             center.post(kind: "disk", title: L.t("alertDiskTitle"),
                         body: String(format: L.t("alertDiskBody"), freeLabel, pct))
         }
-        if let t = sensors.temperature, Model.heatLevel(t) == 2 { hotStreak += 1 } else { hotStreak = 0 }
-        if hotStreak >= 2, let t = sensors.temperature {
-            center.post(kind: "heat", title: L.t("alertHeatTitle"), body: String(format: L.t("alertHeatBody"), t))
+        if heatLevel >= 2 { hotStreak += 1 } else { hotStreak = 0 }
+        if hotStreak >= 2 {
+            let body: String
+            if let t = sensors.temperature, (temperatureLevel ?? 0) >= 2 {
+                body = String(format: L.t("alertHeatBody"), L.deg(t))
+            } else {
+                body = String(format: L.t("alertHeatState"), Heat.label(heatLevel))
+            }
+            center.post(kind: "heat", title: L.t("alertHeatTitle"), body: body)
         }
         if let at = trashCheckedAt, Date().timeIntervalSince(at) < 1800 {
             alertTrash(trashBytes)

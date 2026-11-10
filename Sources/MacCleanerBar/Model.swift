@@ -10,6 +10,13 @@ struct HistoryEntry: Identifiable {
     let action: String
 }
 
+struct CleanResult: Equatable {
+    let ok: Bool
+    let freedKB: Double
+    let sections: [String]
+    let message: String
+}
+
 enum Phase: Equatable {
     case idle
     case previewing(String)
@@ -21,9 +28,18 @@ enum Phase: Equatable {
 final class CLIRun {
     private let process = Process()
     private var data = Data()
+    private var demoFinish: ((String, Int32) -> Void)?
 
-    static func environment() -> [String: String] {
+    static var askpassPath: String? {
+        guard let p = Bundle.main.path(forResource: "askpass", ofType: nil),
+              FileManager.default.isExecutableFile(atPath: p) else { return nil }
+        return p
+    }
+
+    static func environment(askpass: Bool = false) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
+        env.removeValue(forKey: "SUDO_ASKPASS")
+        if askpass, let p = askpassPath { env["SUDO_ASKPASS"] = p }
         env["NO_COLOR"] = "1"
         env["TERM"] = "dumb"
         env["MAC_CLEANER_LANG"] = L.fr ? "fr" : "en"
@@ -34,13 +50,31 @@ final class CLIRun {
     }
 
     @discardableResult
-    static func start(cli: String, args: [String], output: ((String) -> Void)? = nil,
+    static func start(cli: String, args: [String], askpass: Bool = false, output: ((String) -> Void)? = nil,
                       completion: @escaping (String, Int32) -> Void) -> CLIRun {
         let run = CLIRun()
+        if Demo.enabled {
+            run.demoFinish = completion
+            let (text, status) = Demo.respond(args)
+            let delay = args.contains("--yes") ? 2.0 : 0.6
+            if let output {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay / 2) {
+                    guard run.demoFinish != nil else { return }
+                    output(text.components(separatedBy: "\n").prefix(3).joined(separator: "\n"))
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard let finish = run.demoFinish else { return }
+                run.demoFinish = nil
+                output?(text)
+                finish(text, status)
+            }
+            return run
+        }
         let p = run.process
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
         p.arguments = [cli] + args
-        p.environment = environment()
+        p.environment = environment(askpass: askpass)
         p.standardInput = FileHandle.nullDevice
         let pipe = Pipe()
         p.standardOutput = pipe
@@ -73,6 +107,11 @@ final class CLIRun {
     }
 
     func cancel() {
+        if let finish = demoFinish {
+            demoFinish = nil
+            DispatchQueue.main.async { finish("", 15) }
+            return
+        }
         if process.isRunning { process.terminate() }
     }
 }
@@ -90,6 +129,12 @@ final class Model: ObservableObject {
     @Published var phase: Phase = .idle
     @Published var output = ""
     @Published var exitStatus: Int32 = 0
+    @Published var sheetItems: [ToolItem] = []
+    @Published var sheetSelected: Set<Int> = []
+    @Published var sheetError: String?
+    @Published var result: CleanResult?
+    @Published var detailsLoading = false
+    private var detailsKey: String?
     @Published var launchAtLogin = false
     @Published var estimates: [String: Double] = [:]
     @Published var estimating: Set<String> = []
@@ -102,6 +147,7 @@ final class Model: ObservableObject {
     @Published var topCPU: [AppUsage] = []
     @Published var topMemory: [AppUsage] = []
     @Published var activityExpanded: Bool
+    @Published var thermalState = ProcessInfo.processInfo.thermalState
 
     let cliPath: String?
     weak var panelWindow: NSWindow?
@@ -114,7 +160,12 @@ final class Model: ObservableObject {
     private var activityTimer: Timer?
     private let sampler = ProcSampler()
     private var current: CLIRun?
+    private var detailsRun: CLIRun?
+    private var runToken = 0
+    private var previewGeneration = 0
+    private var panelObserver: NSObjectProtocol?
     private var lastEstimate: Date?
+    private var thermalObserver: NSObjectProtocol?
 
     init() {
         let d = UserDefaults.standard
@@ -124,11 +175,19 @@ final class Model: ObservableObject {
         cliPath = Model.findCLI()
         launchAtLogin = SMAppService.mainApp.status == .enabled
         weeklyEnabled = WeeklyJob.isInstalled
-        battery = Battery.read()
+        battery = Demo.enabled ? nil : Battery.read()
         AlertCenter.shared.onOpen = { [weak self] in
             Task { @MainActor in StatusItemOpener.open(panel: self?.panelWindow) }
         }
+        AlertCenter.shared.onOpenTool = { [weak self] tool in
+            Task { @MainActor in if let self { Windows.open(tool, model: self) } }
+        }
         AlertCenter.shared.setUp(enabled: alertsEnabled)
+        thermalObserver = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.thermalState = ProcessInfo.processInfo.thermalState }
+        }
         refresh()
         let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
@@ -165,16 +224,16 @@ final class Model: ObservableObject {
         return sysctlbyname("hw.optional.arm64", &v, &size, nil, 0) == 0 && v == 1
     }()
 
-    nonisolated static let heatThresholds: (Double, Double) = appleSilicon ? (80, 95) : (60, 80)
+    var temperatureLevel: Int? {
+        sensors.temperature.map { ChipProfile.current.level($0) }
+    }
 
-    nonisolated static func heatLevel(_ t: Double) -> Int {
-        t >= heatThresholds.1 ? 2 : (t >= heatThresholds.0 ? 1 : 0)
+    var heatLevel: Int {
+        max(Heat.level(thermalState), temperatureLevel ?? 0)
     }
 
     var level: Int {
-        var l = max(Model.level(pct: diskUsedPct), Model.level(pct: memUsedPct))
-        if let t = sensors.temperature { l = max(l, Model.heatLevel(t)) }
-        return l
+        max(Model.level(pct: diskUsedPct), Model.level(pct: memUsedPct), min(2, heatLevel))
     }
 
     nonisolated static func nsColor(level: Int) -> NSColor {
@@ -183,7 +242,7 @@ final class Model: ObservableObject {
 
     var freeLabel: String {
         let gb = Double(diskFree) / 1_000_000_000
-        return String(format: "%.0f %@", gb, L.gb)
+        return "\(L.num(gb, 0)) \(L.gb)"
     }
 
     static let symbolName: String = {
@@ -204,11 +263,16 @@ final class Model: ObservableObject {
     }
 
     func refresh() {
+        if Demo.enabled {
+            Demo.fill(self)
+            return
+        }
         readDisk()
         readHistory()
         launchAtLogin = SMAppService.mainApp.status == .enabled
         weeklyEnabled = WeeklyJob.isInstalled
         fullDiskAccess = DiskAccess.hasFullAccess()
+        thermalState = ProcessInfo.processInfo.thermalState
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let pct = Model.readMemFree()
             let s = Sensors.read()
@@ -223,7 +287,7 @@ final class Model: ObservableObject {
     func panelOpened() {
         refresh()
         refreshEstimates(force: false)
-        battery = Battery.read()
+        if !Demo.enabled { battery = Battery.read() }
         startActivity()
     }
 
@@ -261,6 +325,11 @@ final class Model: ObservableObject {
     }
 
     private func sampleActivity() {
+        if Demo.enabled {
+            topCPU = Demo.usages(byCPU: true)
+            topMemory = Demo.usages(byCPU: false)
+            return
+        }
         let apps = NSWorkspace.shared.runningApplications.filter {
             $0.activationPolicy == .regular && !$0.isTerminated && $0.processIdentifier != getpid()
         }
@@ -281,7 +350,7 @@ final class Model: ObservableObject {
     }
 
     func quitApp(_ usage: AppUsage) {
-        guard usage.canQuit, let app = NSRunningApplication(processIdentifier: usage.pid) else { return }
+        guard !Demo.enabled, usage.canQuit, let app = NSRunningApplication(processIdentifier: usage.pid) else { return }
         app.terminate()
     }
 
@@ -293,6 +362,10 @@ final class Model: ObservableObject {
     }
 
     func setWeekly(_ on: Bool) {
+        if Demo.enabled {
+            weeklyEnabled = on
+            return
+        }
         if on {
             if let cli = cliPath { WeeklyJob.enable(cli: cli, lang: L.fr ? "fr" : "en") }
         } else {
@@ -315,25 +388,52 @@ final class Model: ObservableObject {
     private func estimate(cli: String, queue: [String]) {
         guard let cmd = queue.first else { return }
         estimating.insert(cmd)
-        CLIRun.start(cli: cli, args: [cmd, "--dry-run"]) { [weak self] text, status in
+        CLIRun.start(cli: cli, args: [cmd, "--list"]) { [weak self] text, status in
             guard let self else { return }
             self.estimating.remove(cmd)
-            if status == 0, let kb = Model.parseTotal(text) { self.estimates[cmd] = kb } else { self.estimates[cmd] = nil }
+            if status == 0 {
+                let items = ToolItem.parseList(text)
+                self.estimates[cmd] = Model.defaultSelection(items).reduce(0) { $0 + $1.kb }
+            } else {
+                self.estimates[cmd] = nil
+            }
             self.estimate(cli: cli, queue: Array(queue.dropFirst()))
         }
     }
 
-    nonisolated static func parseTotal(_ text: String) -> Double? {
-        let pattern = "(?:Total|Taille de la corbeille|Trash size)\\s*:\\s*([0-9]+(?:[.,][0-9]+)?)\\s*(Go|GB|Mo|MB|Ko|KB)"
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let ns = text as NSString
-        guard let m = re.matches(in: text, range: NSRange(location: 0, length: ns.length)).last else { return nil }
-        let n = Double(ns.substring(with: m.range(at: 1)).replacingOccurrences(of: ",", with: ".")) ?? 0
-        switch ns.substring(with: m.range(at: 2)) {
-        case "Go", "GB": return n * 1_048_576
-        case "Mo", "MB": return n * 1024
-        default: return n
-        }
+    nonisolated static let selectable: Set<String> = ["caches", "temp"]
+
+    nonisolated static let historyAction: [String: String] = ["caches": "m5", "temp": "mt", "trash": "m2", "auto": "m9"]
+
+    nonisolated static func defaultSelection(_ items: [ToolItem]) -> [ToolItem] {
+        items.filter { $0.index > 0 && $0.state != "excluded" }
+    }
+
+    var sheetSelectedKB: Double {
+        guard case .previewReady(let c) = phase else { return 0 }
+        if !Model.selectable.contains(c) { return sheetItems.filter { $0.index > 0 }.reduce(0) { $0 + $1.kb } }
+        return sheetItems.filter { $0.index > 0 && sheetSelected.contains($0.index) }.reduce(0) { $0 + $1.kb }
+    }
+
+    var canClean: Bool {
+        guard case .previewReady(let c) = phase, sheetError == nil else { return false }
+        if Model.selectable.contains(c) { return !sheetSelected.isEmpty }
+        return sheetItems.contains { $0.index > 0 }
+    }
+
+    func toggleSheet(_ index: Int) {
+        guard case .previewReady = phase, index > 0 else { return }
+        if sheetSelected.contains(index) { sheetSelected.remove(index) } else { sheetSelected.insert(index) }
+    }
+
+    func setSheet(_ indexes: [Int], on: Bool) {
+        guard case .previewReady = phase else { return }
+        if on { sheetSelected.formUnion(indexes) } else { sheetSelected.subtract(indexes) }
+    }
+
+    private func selectArgs(_ command: String) -> [String] {
+        guard Model.selectable.contains(command) else { return [] }
+        return ["--select", sheetSelected.sorted().map(String.init).joined(separator: " ")]
     }
 
     private func readDisk() {
@@ -398,8 +498,12 @@ final class Model: ObservableObject {
 
     static func findCLI() -> String? {
         let fm = FileManager.default
+        if Demo.enabled { return "demo" }
         if let env = ProcessInfo.processInfo.environment["MAC_CLEANER_BIN"], fm.fileExists(atPath: env) {
             return env
+        }
+        if let embedded = Bundle.main.path(forResource: "mac-cleaner", ofType: nil), fm.fileExists(atPath: embedded) {
+            return embedded
         }
         for path in ["/opt/homebrew/bin/mac-cleaner", "/usr/local/bin/mac-cleaner"] where fm.fileExists(atPath: path) {
             return path
@@ -409,28 +513,141 @@ final class Model: ObservableObject {
 
     func preview(_ command: String) {
         guard !busy else { return }
+        sheetItems = []
+        sheetSelected = []
+        sheetError = nil
+        result = nil
+        detailsKey = nil
+        previewGeneration += 1
+        let gen = previewGeneration
         phase = .previewing(command)
-        run([command, "--dry-run"]) { [weak self] in self?.phase = .previewReady(command) }
+        run([command, "--list"], live: false) { [weak self] in
+            guard let self, self.previewGeneration == gen else { return }
+            if self.exitStatus == 0 {
+                self.sheetItems = ToolItem.parseList(self.output)
+                self.sheetSelected = Set(Model.defaultSelection(self.sheetItems).filter { $0.kb > 0 }.map(\.index))
+                self.estimates[command] = Model.defaultSelection(self.sheetItems).reduce(0) { $0 + $1.kb }
+            } else {
+                self.sheetError = UninstallModel.lastMeaningfulLine(self.output)
+            }
+            self.output = ""
+            self.phase = .previewReady(command)
+        }
+    }
+
+    func loadDetails() {
+        guard case .previewReady(let command) = phase, let cli = cliPath, !detailsLoading else { return }
+        let args = [command, "--dry-run"] + selectArgs(command)
+        let key = args.joined(separator: "\u{1F}")
+        guard detailsKey != key else { return }
+        detailsKey = key
+        detailsLoading = true
+        output = ""
+        detailsRun = CLIRun.start(cli: cli, args: args, output: { [weak self] text in
+            guard let self, self.detailsKey == key, self.detailsLoading else { return }
+            self.output = text
+        }, completion: { [weak self] text, _ in
+            guard let self, self.detailsKey == key, self.detailsLoading else { return }
+            self.output = text
+            self.detailsLoading = false
+            self.detailsRun = nil
+        })
     }
 
     func clean() {
-        guard case .previewReady(let command) = phase else { return }
+        guard case .previewReady(let command) = phase, canClean else { return }
+        cancelDetails()
+        let args = [command, "--yes"] + selectArgs(command)
+        let chosen = Model.selectable.contains(command)
+            ? sheetItems.filter { $0.index > 0 && sheetSelected.contains($0.index) }
+            : sheetItems.filter { $0.index > 0 }
+        let estimate = chosen.reduce(0) { $0 + $1.kb }
+        let sections: [String]
+        switch command {
+        case "auto": sections = chosen.filter { $0.kb > 0 }.map(\.label)
+        case "trash": sections = [String(format: L.t("trashItems"), chosen.count)]
+        case "temp":
+            sections = [("tmp", "tempFiles"), ("clone", "appCopies")].compactMap { t, key in
+                let n = chosen.filter { $0.type == t }.count
+                return n > 0 ? "\(L.t(key)) · \(n)" : nil
+            }
+        default: sections = chosen.map(\.label)
+        }
+        let before = Model.historyLines().count
         phase = .cleaning(command)
-        run([command, "--yes"]) { [weak self] in
+        run(args, live: true) { [weak self] in
             guard let self else { return }
+            let ok = self.exitStatus == 0
+            let logged = Model.historyLines().dropFirst(before).filter { $0.action == Model.historyAction[command] }
+            let freed = logged.isEmpty ? (ok ? estimate : 0) : logged.reduce(0) { $0 + $1.kb }
+            self.result = CleanResult(ok: ok, freedKB: freed, sections: sections,
+                                      message: ok ? "" : UninstallModel.lastMeaningfulLine(self.output))
             self.phase = .cleaned(command)
             self.refresh()
             self.refreshEstimates(force: true)
+            if !self.panelVisible {
+                AlertCenter.shared.notify(
+                    title: String(format: L.t(ok ? "notifyDone" : "notifyFailed"), L.t(command)),
+                    body: ok ? String(format: L.t("freedAmount"), L.human(kb: freed)) : L.t("notifyOpen"))
+            }
         }
+    }
+
+    func back() {
+        switch phase {
+        case .previewing:
+            previewGeneration += 1
+            runToken += 1
+            let run = current
+            current = nil
+            run?.cancel()
+            phase = .idle
+            dismiss()
+        case .previewReady, .cleaned:
+            dismiss()
+        case .cleaning, .idle:
+            break
+        }
+    }
+
+    func cancelDetails() {
+        guard detailsLoading else { return }
+        let run = detailsRun
+        detailsRun = nil
+        detailsLoading = false
+        detailsKey = nil
+        run?.cancel()
+    }
+
+    func attachPanel(_ window: NSWindow?) {
+        guard let window, window !== panelWindow else { return }
+        panelWindow = window
+        if let panelObserver { NotificationCenter.default.removeObserver(panelObserver) }
+        panelObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.panelClosed() }
+        }
+    }
+
+    func panelClosed() {
+        if case .previewing = phase { back() }
+        cancelDetails()
     }
 
     func dismiss() {
         guard !busy else { return }
+        cancelDetails()
+        detailsKey = nil
         phase = .idle
         output = ""
+        sheetItems = []
+        sheetSelected = []
+        sheetError = nil
+        result = nil
     }
 
-    private func run(_ args: [String], completion: @escaping () -> Void) {
+    private func run(_ args: [String], live: Bool, completion: @escaping () -> Void) {
         output = ""
         exitStatus = 0
         guard let cli = cliPath else {
@@ -439,10 +656,13 @@ final class Model: ObservableObject {
             completion()
             return
         }
-        current = CLIRun.start(cli: cli, args: args, output: { [weak self] text in
-            self?.output = text
-        }, completion: { [weak self] text, status in
-            guard let self else { return }
+        runToken += 1
+        let token = runToken
+        current = CLIRun.start(cli: cli, args: args, output: live ? { [weak self] text in
+            guard let self, self.runToken == token else { return }
+            self.output = text
+        } : nil, completion: { [weak self] text, status in
+            guard let self, self.runToken == token else { return }
             self.output = text
             self.exitStatus = status
             self.current = nil
@@ -450,10 +670,26 @@ final class Model: ObservableObject {
         })
     }
 
+    nonisolated static func historyLines() -> [(action: String, kb: Double)] {
+        guard let text = try? String(contentsOfFile: historyPath, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").map { line in
+            let cols = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            return (cols.count > 1 ? cols[1] : "", cols.count > 2 ? Double(cols[2]) ?? 0 : 0)
+        }
+    }
+
     func freeRAM() {
         guard !busy else { return }
         purging = true
         notice = nil
+        if Demo.enabled {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                guard let self else { return }
+                self.purging = false
+                self.notice = String(format: L.t("ramDone"), 18, 41)
+            }
+            return
+        }
         Thread.detachNewThread { [weak self] in
             let before = Model.readMemFree()
             var error: NSDictionary?
@@ -498,28 +734,11 @@ final class Model: ObservableObject {
             .replacingOccurrences(of: "\r", with: "\n")
     }
 
-    func openInTerminal(_ command: String?) {
-        guard let cli = cliPath else {
-            phase = .cleaned("")
-            output = L.t("missing") + "\n" + Model.installHint
+    func setLaunchAtLogin(_ on: Bool) {
+        if Demo.enabled {
+            launchAtLogin = on
             return
         }
-        let quoted = "'" + cli.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        let line = "exec /bin/zsh \(quoted)" + (command.map { " \($0)" } ?? "")
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("mac-cleaner-\(UUID().uuidString.prefix(8)).command")
-        let script = "#!/bin/zsh\nrm -f \"$0\"\n\(line)\n"
-        do {
-            try script.write(to: url, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
-        } catch { return }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = ["-a", "Terminal", url.path]
-        try? p.run()
-    }
-
-    func setLaunchAtLogin(_ on: Bool) {
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch {}

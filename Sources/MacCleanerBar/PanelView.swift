@@ -44,16 +44,12 @@ struct Card<Content: View>: View {
 
 struct PanelView: View {
     @ObservedObject var model: Model
-    let openUninstaller: () -> Void
+    let openTool: (String) -> Void
 
     private let shortcuts: [(String, String)] = [
         ("ram", "memorychip"), ("temp", "trash"), ("caches", "square.stack.3d.up"), ("trash", "xmark.bin"),
     ]
-    private let tools: [(String, String)] = [
-        ("uninstall", "xmark.app"), ("large", "doc.richtext"), ("downloads", "arrow.down.circle"),
-        ("duplicates", "doc.on.doc"), ("startup", "power"), ("dev", "chevron.left.forwardslash.chevron.right"),
-        ("system", "gearshape.2"),
-    ]
+    private var tools: [(String, String)] { Catalog.tools }
 
     var body: some View {
         VStack(spacing: 14) {
@@ -67,7 +63,7 @@ struct PanelView: View {
                 cleanAllButton
                 toolsGrid
             } else {
-                runView
+                PreviewSheet(model: model)
             }
             Divider().opacity(0.5)
             footer
@@ -75,7 +71,7 @@ struct PanelView: View {
         .padding(16)
         .frame(width: 360)
         .background(.ultraThinMaterial)
-        .background(WindowReader { model.panelWindow = $0 })
+        .background(WindowReader { model.attachPanel($0) })
         .onAppear { model.panelOpened() }
     }
 
@@ -185,7 +181,7 @@ struct PanelView: View {
             }
             Text(u.name).font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
-            Text(usageMode == 0 ? String(format: "%.1f %%", u.cpu ?? 0) : L.human(bytes: u.memory))
+            Text(usageMode == 0 ? L.pct(u.cpu ?? 0) : L.human(bytes: u.memory))
                 .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
             if u.canQuit {
                 Button(L.t("quitApp")) { model.quitApp(u) }
@@ -211,10 +207,14 @@ struct PanelView: View {
         .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private var heatNote: (String, Int)? {
-        guard let t = model.sensors.temperature else { return nil }
-        let l = Model.heatLevel(t)
-        return ([L.t("heatNormal"), L.t("heatHigh"), L.t("heatHot")][l], l)
+    private var heatNote: (String, Int) {
+        let l = model.heatLevel
+        return (Heat.label(l), min(2, l))
+    }
+
+    private var heatHelp: String {
+        let p = ChipProfile.current
+        return String(format: L.t("heatHelp"), p.family, L.num(p.high, 0), L.deg(p.hot), Heat.label(Heat.level(model.thermalState)))
     }
 
     private var rings: some View {
@@ -235,11 +235,10 @@ struct PanelView: View {
             .frame(maxWidth: .infinity)
             VStack(spacing: 6) {
                 let t = model.sensors.temperature
-                Ring(fraction: t.map { $0 / 100 }, value: t.map { String(format: "%.0f °C", $0) } ?? "—",
-                     label: L.t("heat"), tint: t.map { Model.heatLevel($0) > 0 ? .level(Model.heatLevel($0)) : .accentBlue } ?? .accentBlue)
-                if let (note, l) = heatNote {
-                    Text(note).font(.caption.weight(.semibold)).foregroundStyle(Color.level(l))
-                }
+                let (note, l) = heatNote
+                Ring(fraction: t.map { $0 / ChipProfile.current.hot }, value: t.map { L.deg($0) } ?? "—",
+                     label: L.t("heat"), tint: l > 0 ? .level(l) : .accentBlue)
+                Text(note).font(.caption.weight(.semibold)).foregroundStyle(Color.level(l))
                 if let n = model.sensors.fanCount {
                     Text(L.fans(n, rpm: model.sensors.fanRPM))
                         .font(.system(size: 10)).foregroundStyle(.secondary)
@@ -248,6 +247,7 @@ struct PanelView: View {
                 }
             }
             .frame(maxWidth: .infinity)
+            .help(heatHelp)
         }
     }
 
@@ -316,10 +316,10 @@ struct PanelView: View {
     private var toolsGrid: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(L.t("tools")).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 10) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4, alignment: .top), count: 4), spacing: 10) {
                 ForEach(tools, id: \.0) { item in
                     Button {
-                        if item.0 == "uninstall" { openUninstaller() } else { model.openInTerminal(item.0) }
+                        openTool(item.0)
                     } label: {
                         VStack(spacing: 5) {
                             Image(systemName: item.1)
@@ -337,60 +337,9 @@ struct PanelView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(model.busy || model.cliPath == nil)
+                    .disabled(item.0 != "diskmap" && (model.busy || model.cliPath == nil))
                 }
             }
-        }
-    }
-
-    private var runTitle: String {
-        switch model.phase {
-        case .previewing(let c), .previewReady(let c): return "\(L.t("preview")) · \(L.t(c))"
-        case .cleaning(let c): return "\(L.t(c)) · \(L.t("running"))"
-        case .cleaned(let c): return c.isEmpty ? "Mac Cleaner" : "\(L.t(c)) · \(L.t("done"))"
-        case .idle: return ""
-        }
-    }
-
-    private var runView: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(runTitle).font(.system(size: 13, weight: .semibold))
-                Spacer()
-                if model.busy { ProgressView().controlSize(.small) }
-            }
-            ScrollViewReader { proxy in
-                ScrollView {
-                    Text(model.output.isEmpty ? (model.busy ? L.t("running") : L.t("noOutput")) : model.output)
-                        .font(.system(size: 10, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                    Color.clear.frame(height: 1).id("end")
-                }
-                .frame(height: 260)
-                .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .onChange(of: model.output) { _ in proxy.scrollTo("end", anchor: .bottom) }
-            }
-            if !model.busy && model.exitStatus != 0 {
-                Text(String(format: L.t("exitCode"), model.exitStatus)).font(.caption).foregroundStyle(.red)
-            }
-            HStack {
-                Spacer()
-                switch model.phase {
-                case .previewReady:
-                    Button(L.t("cancel")) { model.dismiss() }
-                    Button(L.t("clean")) { model.clean() }
-                        .keyboardShortcut(.defaultAction)
-                        .tint(.accentBlue)
-                        .disabled(model.exitStatus != 0)
-                case .cleaned:
-                    Button(L.t("close")) { model.dismiss() }.keyboardShortcut(.defaultAction)
-                default:
-                    Button(L.t("cancel")) {}.disabled(true)
-                }
-            }
-            .controlSize(.large)
         }
     }
 
@@ -413,8 +362,6 @@ struct PanelView: View {
                     set: { model.setWeekly($0) }
                 ))
                 .disabled(model.cliPath == nil)
-                Button(L.t("menu")) { model.openInTerminal(nil) }
-                    .disabled(model.cliPath == nil)
                 Divider()
                 Button(L.t("quit")) { NSApplication.shared.terminate(nil) }
                     .keyboardShortcut("q")

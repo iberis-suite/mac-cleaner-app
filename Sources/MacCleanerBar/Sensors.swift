@@ -128,6 +128,68 @@ final class SMC {
     }
 }
 
+struct ChipProfile: Equatable {
+    let family: String
+    let brand: String
+    let model: String
+    let high: Double
+    let hot: Double
+
+    static let current = detect(brand: sysctlString("machdep.cpu.brand_string"), model: sysctlString("hw.model"))
+
+    static func sysctlString(_ name: String) -> String {
+        var size = 0
+        guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return "" }
+        var buf = [CChar](repeating: 0, count: size)
+        guard sysctlbyname(name, &buf, &size, nil, 0) == 0 else { return "" }
+        return String(cString: buf).trimmingCharacters(in: .whitespaces)
+    }
+
+    static func detect(brand: String, model: String) -> ChipProfile {
+        let b = brand.lowercased()
+        let m = model.lowercased()
+        func make(_ family: String, _ high: Double, _ hot: Double) -> ChipProfile {
+            ChipProfile(family: family, brand: brand, model: model, high: high, hot: hot)
+        }
+        if b.contains("intel") { return make("Intel", 75, 90) }
+        if b.hasPrefix("apple m") || (b.isEmpty && m.hasPrefix("macbookair") && Model.appleSilicon) {
+            if b.contains("pro") || b.contains("max") || b.contains("ultra") { return make("Apple Pro/Max/Ultra", 80, 95) }
+            return make("Apple M", 85, 100)
+        }
+        return make("?", 80, 95)
+    }
+
+    func level(_ t: Double) -> Int {
+        t >= hot ? 2 : (t >= high ? 1 : 0)
+    }
+}
+
+enum Heat {
+    static func level(_ s: ProcessInfo.ThermalState) -> Int {
+        switch s {
+        case .nominal: return 0
+        case .fair: return 1
+        case .serious: return 2
+        case .critical: return 3
+        @unknown default: return 0
+        }
+    }
+
+    static func name(_ s: ProcessInfo.ThermalState) -> String {
+        switch s {
+        case .nominal: return "nominal"
+        case .fair: return "fair"
+        case .serious: return "serious"
+        case .critical: return "critical"
+        @unknown default: return "?"
+        }
+    }
+
+    static func label(_ level: Int) -> String {
+        L.t(["heatNormal", "heatHigh", "heatHot", "heatCritical"][max(0, min(3, level))])
+    }
+}
+
 enum Sensors {
     nonisolated(unsafe) private static var cpuKeys: [String]?
 

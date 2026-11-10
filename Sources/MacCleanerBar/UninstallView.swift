@@ -25,6 +25,8 @@ final class UninstallModel: ObservableObject {
     @Published var working = false
     @Published var message: String?
     @Published var failed = false
+    @Published var confirming = false
+    @Published var lastOutput = ""
 
     let cliPath: String?
     private var run: CLIRun?
@@ -41,6 +43,11 @@ final class UninstallModel: ObservableObject {
     }
 
     func reload() {
+        if Demo.enabled {
+            apps = Demo.apps
+            sizes = Demo.appSizes
+            return
+        }
         let fm = FileManager.default
         let dirs = ["/Applications", (NSHomeDirectory() as NSString).appendingPathComponent("Applications")]
         var found: [AppItem] = []
@@ -109,11 +116,12 @@ final class UninstallModel: ObservableObject {
         }
         loading = true
         run = CLIRun.start(cli: cli, args: ["uninstall", app.path, "--dry-run"]) { [weak self] text, status in
-            guard let self, self.selected == app else { return }
+            guard let self, self.selected == app, self.loading else { return }
             self.loading = false
             self.failed = status != 0
+            self.lastOutput = text
             self.parse(text)
-            if status != 0 { self.message = UninstallModel.lastMeaningfulLine(text) }
+            if status != 0 { self.message = UninstallModel.summary(text, status: status) }
         }
     }
 
@@ -144,29 +152,75 @@ final class UninstallModel: ObservableObject {
             .last { !$0.isEmpty } ?? ""
     }
 
+    nonisolated static func summary(_ text: String, status: Int32) -> String {
+        let line = lastMeaningfulLine(text)
+        return line.isEmpty || status == 15 ? String(format: L.t("exitCode"), status) : line
+    }
+
+    var canTrash: Bool { selected != nil && !loading && !working && !failed && cliPath != nil }
+
+    func askTrash() {
+        guard canTrash else { return }
+        confirming = true
+    }
+
     func trash() {
+        confirming = false
         guard let app = selected, let cli = cliPath, !working, !loading, !failed else { return }
         working = true
+        message = nil
         run = CLIRun.start(cli: cli, args: ["uninstall", app.path, "--yes"]) { [weak self] text, status in
             guard let self else { return }
             self.working = false
+            self.failed = status != 0
+            self.lastOutput = text
             self.message = status == 0 ? String(format: L.t("uninstalled"), app.name)
-                : UninstallModel.lastMeaningfulLine(text)
-            self.clearSelection()
-            self.sizes[app.path] = nil
-            self.reload()
+                : UninstallModel.summary(text, status: status)
+            Hub.finished("uninstall", ok: status == 0)
+            if status == 0 {
+                self.clearSelection()
+                self.failed = false
+                self.sizes[app.path] = nil
+                self.reload()
+            }
             self.onChange?()
         }
+    }
+
+    func back() -> Bool {
+        if working { return false }
+        if selected != nil {
+            clearSelection()
+            message = nil
+            return true
+        }
+        if !query.isEmpty {
+            query = ""
+            return true
+        }
+        return false
+    }
+
+    var backKey: String {
+        if working { return "home" }
+        if loading { return "cancel" }
+        return selected != nil || !query.isEmpty ? "back" : "home"
+    }
+
+    func stop() {
+        if !working { clearSelection() }
     }
 }
 
 struct UninstallView: View {
     @ObservedObject var model: UninstallModel
-    let close: () -> Void
+    let home: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(L.t("uninstall")).font(.system(size: 18, weight: .bold, design: .rounded))
+            ToolHeader(title: L.t("uninstall"), backTitle: L.t(model.backKey), back: { if !model.back() { home() } }) {
+                EmptyView()
+            }
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField(L.t("search"), text: $model.query).textFieldStyle(.plain)
@@ -176,32 +230,36 @@ struct UninstallView: View {
             appList
             details
             if let message = model.message {
-                Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            }
-            HStack {
-                Spacer()
-                Button(L.t("cancel")) { close() }
-                    .keyboardShortcut(.cancelAction)
-                let disabled = model.selected == nil || model.loading || model.working || model.failed
-                Button(role: .destructive) { model.trash() } label: {
-                    Group {
-                        if model.working { ProgressView().controlSize(.small) } else { Text(L.t("toTrash")) }
-                    }
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                    .background(Color.red.opacity(disabled ? 0.4 : 1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .contentShape(Rectangle())
+                if model.failed {
+                    ErrorNote(summary: message, detail: model.lastOutput)
+                } else {
+                    Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
-                .buttonStyle(.plain)
-                .disabled(disabled)
             }
-            .controlSize(.large)
+            Group {
+                if model.working {
+                    RunningNote(text: L.t("keepRunning"))
+                } else {
+                    HStack(spacing: 10) {
+                        Spacer()
+                        if model.selected != nil {
+                            SecondaryButton(title: L.t("cancel")) { _ = model.back() }
+                        }
+                        BlueButton(title: L.t("toTrash") + "…", enabled: model.canTrash, destructive: true) { model.askTrash() }
+                            .keyboardShortcut(.defaultAction)
+                    }
+                }
+            }
+            .frame(minHeight: 32)
         }
-        .padding(18)
-        .frame(width: 440, height: 600)
-        .background(.ultraThinMaterial)
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .alert(String(format: L.t("uninstallAsk"), model.selected?.name ?? ""), isPresented: $model.confirming) {
+            Button(L.t("toTrash"), role: .destructive) { model.trash() }
+            Button(L.t("cancel"), role: .cancel) {}
+        } message: {
+            Text(String(format: L.t("uninstallInfo"), model.total ?? "—"))
+        }
     }
 
     private var appList: some View {
@@ -284,52 +342,5 @@ struct UninstallView: View {
         }
         .padding(10)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-}
-
-@MainActor
-final class UninstallWindow: NSObject, NSWindowDelegate {
-    private var panel: NSPanel?
-    private var model: UninstallModel?
-    private let cliPath: String?
-    private let onChange: () -> Void
-
-    init(cliPath: String?, onChange: @escaping () -> Void) {
-        self.cliPath = cliPath
-        self.onChange = onChange
-    }
-
-    func show() {
-        if let panel {
-            model?.reload()
-            NSApp.activate(ignoringOtherApps: true)
-            panel.makeKeyAndOrderFront(nil)
-            return
-        }
-        let m = UninstallModel(cliPath: cliPath)
-        m.onChange = onChange
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 600),
-                        styleMask: [.titled, .closable, .fullSizeContentView],
-                        backing: .buffered, defer: false)
-        p.titlebarAppearsTransparent = true
-        p.titleVisibility = .hidden
-        p.isMovableByWindowBackground = true
-        p.isFloatingPanel = true
-        p.level = .floating
-        p.hidesOnDeactivate = false
-        p.isReleasedWhenClosed = false
-        p.delegate = self
-        p.contentView = NSHostingView(rootView: UninstallView(model: m) { [weak p] in p?.close() })
-        p.center()
-        panel = p
-        model = m
-        m.reload()
-        NSApp.activate(ignoringOtherApps: true)
-        p.makeKeyAndOrderFront(nil)
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        model?.clearSelection()
-        model?.message = nil
     }
 }
