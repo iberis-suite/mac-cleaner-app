@@ -53,6 +53,7 @@ struct PanelView: View {
         ("uninstall", "xmark.app"), ("large", "doc.richtext"), ("downloads", "arrow.down.circle"),
         ("duplicates", "doc.on.doc"), ("startup", "power"), ("dev", "chevron.left.forwardslash.chevron.right"),
         ("cachesAdv", "square.stack.3d.down.right"), ("system", "gearshape.2"),
+        ("diskmap", "chart.pie"), ("maintenance", "wrench.and.screwdriver"), ("privacy", "hand.raised"),
     ]
 
     var body: some View {
@@ -341,7 +342,7 @@ struct PanelView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(model.busy || model.cliPath == nil)
+                    .disabled(item.0 != "diskmap" && (model.busy || model.cliPath == nil))
                 }
             }
         }
