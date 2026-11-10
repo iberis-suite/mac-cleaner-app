@@ -8,7 +8,6 @@ cask "mac-cleaner-bar" do
   homepage "https://github.com/chaibialaa/mac-cleaner"
 
   depends_on macos: ">= :ventura"
-  depends_on formula: "chaibialaa/tap/mac-cleaner"
 
   app "Mac Cleaner.app"
 

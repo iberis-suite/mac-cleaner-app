@@ -67,7 +67,7 @@ struct PanelView: View {
                 cleanAllButton
                 toolsGrid
             } else {
-                runView
+                PreviewSheet(model: model)
             }
             Divider().opacity(0.5)
             footer
@@ -344,57 +344,6 @@ struct PanelView: View {
                     .disabled(model.busy || model.cliPath == nil)
                 }
             }
-        }
-    }
-
-    private var runTitle: String {
-        switch model.phase {
-        case .previewing(let c), .previewReady(let c): return "\(L.t("preview")) · \(L.t(c))"
-        case .cleaning(let c): return "\(L.t(c)) · \(L.t("running"))"
-        case .cleaned(let c): return c.isEmpty ? "Mac Cleaner" : "\(L.t(c)) · \(L.t("done"))"
-        case .idle: return ""
-        }
-    }
-
-    private var runView: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(runTitle).font(.system(size: 13, weight: .semibold))
-                Spacer()
-                if model.busy { ProgressView().controlSize(.small) }
-            }
-            ScrollViewReader { proxy in
-                ScrollView {
-                    Text(model.output.isEmpty ? (model.busy ? L.t("running") : L.t("noOutput")) : model.output)
-                        .font(.system(size: 10, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                    Color.clear.frame(height: 1).id("end")
-                }
-                .frame(height: 260)
-                .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .onChange(of: model.output) { _ in proxy.scrollTo("end", anchor: .bottom) }
-            }
-            if !model.busy && model.exitStatus != 0 {
-                Text(String(format: L.t("exitCode"), model.exitStatus)).font(.caption).foregroundStyle(.red)
-            }
-            HStack {
-                Spacer()
-                switch model.phase {
-                case .previewReady:
-                    Button(L.t("cancel")) { model.dismiss() }
-                    Button(L.t("clean")) { model.clean() }
-                        .keyboardShortcut(.defaultAction)
-                        .tint(.accentBlue)
-                        .disabled(model.exitStatus != 0)
-                case .cleaned:
-                    Button(L.t("close")) { model.dismiss() }.keyboardShortcut(.defaultAction)
-                default:
-                    Button(L.t("cancel")) {}.disabled(true)
-                }
-            }
-            .controlSize(.large)
         }
     }
 

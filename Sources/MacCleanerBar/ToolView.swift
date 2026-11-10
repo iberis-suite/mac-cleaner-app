@@ -13,6 +13,14 @@ struct ToolItem: Identifiable, Hashable {
 
     var key: String { type == "unity" ? "u\(index)" : "\(index)" }
 
+    static func parseList(_ text: String) -> [ToolItem] {
+        text.components(separatedBy: "\n").compactMap { line in
+            let c = line.components(separatedBy: "\t")
+            guard c.count >= 5, let i = Int(c[0]), let kb = Double(c[1]) else { return nil }
+            return ToolItem(index: i, kb: kb, label: c[2], path: c[3], type: c[4], state: c.count > 5 ? c[5] : "")
+        }
+    }
+
     var shortPath: String {
         let home = NSHomeDirectory()
         return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
@@ -33,6 +41,7 @@ final class ToolModel: ObservableObject {
     let tool: String
     let cliPath: String?
     @Published var items: [ToolItem] = []
+    @Published var skipped: [ToolItem] = []
     @Published var selected: Set<String> = []
     @Published var collapsed: Set<Int> = []
     @Published var minMB: String
@@ -116,11 +125,15 @@ final class ToolModel: ObservableObject {
             if self.tool == "system" {
                 self.output = ToolModel.clean(text)
             } else {
-                self.items = ToolModel.parse(text)
+                let all = ToolItem.parseList(text)
+                self.items = all.filter { $0.index > 0 }
+                self.skipped = all.filter { $0.index == 0 }
                 let keys = Set(self.items.map(\.key))
                 self.selected = self.selected.intersection(keys)
                 if self.tool == "cachesAdv" && !keepOutput && self.selected.isEmpty {
-                    self.selected = Set(self.items.filter { !["docker", "nodemod"].contains($0.type) && $0.kb > 0 }.map(\.key))
+                    self.selected = Set(self.items.filter {
+                        $0.state != "excluded" && !["docker", "nodemod", "devsupport"].contains($0.type) && $0.kb > 0
+                    }.map(\.key))
                 }
             }
             if status != 0 {
@@ -130,13 +143,6 @@ final class ToolModel: ObservableObject {
         }
     }
 
-    nonisolated static func parse(_ text: String) -> [ToolItem] {
-        text.components(separatedBy: "\n").compactMap { line in
-            let c = line.components(separatedBy: "\t")
-            guard c.count >= 5, let i = Int(c[0]), let kb = Double(c[1]) else { return nil }
-            return ToolItem(index: i, kb: kb, label: c[2], path: c[3], type: c[4], state: c.count > 5 ? c[5] : "")
-        }
-    }
 
     nonisolated static func clean(_ text: String) -> String {
         text.components(separatedBy: "\n").filter { !$0.contains("?") || !$0.contains("›") }
@@ -227,8 +233,9 @@ struct ToolView: View {
                 outputBox(maxHeight: .infinity)
             } else {
                 list
+                if !model.skipped.isEmpty { SkippedRow(items: model.skipped) }
                 if !model.output.isEmpty || model.stage == .previewing || model.stage == .working {
-                    outputBox(maxHeight: 150)
+                    DetailsBox(text: model.output, loading: model.stage == .previewing || model.stage == .working, height: 150)
                 }
             }
             if let message = model.message {
@@ -302,7 +309,9 @@ struct ToolView: View {
                     case "duplicates": duplicateGroups
                     case "startup": startupSections
                     case "dev": devSections
-                    default: ForEach(model.items) { checkRow($0) }
+                    default:
+                        let maxKB = model.items.map(\.kb).max() ?? 0
+                        ForEach(model.items) { checkRow($0, maxKB: maxKB) }
                     }
                 }
             }
@@ -343,25 +352,34 @@ struct ToolView: View {
         Text(L.human(kb: kb)).font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
     }
 
-    private func checkRow(_ item: ToolItem) -> some View {
+    private func checkRow(_ item: ToolItem, maxKB: Double) -> some View {
         let on = model.selected.contains(item.key)
         return HStack(spacing: 8) {
             Button { model.toggle(item) } label: {
                 HStack(spacing: 8) {
                     checkbox(on)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(item.label).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
-                        if !item.path.isEmpty {
+                    Image(systemName: ItemStyle.symbol(item))
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.accentBlue)
+                        .frame(width: 22, height: 22)
+                        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text(item.label).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
+                            Spacer(minLength: 6)
+                            sizeText(item.kb)
+                        }
+                        if item.path.hasPrefix("/") {
                             Text(item.shortPath).font(.system(size: 10)).foregroundStyle(.secondary)
                                 .lineLimit(1).truncationMode(.middle)
                         }
+                        SizeBar(fraction: maxKB > 0 ? item.kb / maxKB : 0)
                     }
-                    Spacer(minLength: 6)
-                    sizeText(item.kb)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .help(item.path.hasPrefix("/") ? item.path : item.label)
             finderButton(item.path)
         }
         .padding(.horizontal, 6)
@@ -461,23 +479,26 @@ struct ToolView: View {
         let unity = model.items.filter { $0.type == "unity" }
         if !wt.isEmpty {
             sectionTitle(L.t("worktrees"))
-            ForEach(wt) { checkRow($0) }
+            ForEach(wt) { checkRow($0, maxKB: wt.map(\.kb).max() ?? 0) }
         }
         if !unity.isEmpty {
             sectionTitle(L.t("unityLib"))
-            ForEach(unity) { checkRow($0) }
+            ForEach(unity) { checkRow($0, maxKB: unity.map(\.kb).max() ?? 0) }
         }
     }
 
     private func outputBox(maxHeight: CGFloat) -> some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                Text(model.output.isEmpty ? L.t("running") : model.output)
-                    .font(.system(size: 10, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                Color.clear.frame(height: 1).id("end")
+            ScrollView([.horizontal, .vertical]) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(model.output.isEmpty ? L.t("running") : model.output)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .fixedSize(horizontal: true, vertical: true)
+                        .textSelection(.enabled)
+                        .padding(8)
+                    Color.clear.frame(height: 1).id("end")
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
             .frame(maxHeight: maxHeight)
             .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
