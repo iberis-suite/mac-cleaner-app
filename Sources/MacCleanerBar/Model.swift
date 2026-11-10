@@ -95,19 +95,52 @@ final class Model: ObservableObject {
     @Published var estimating: Set<String> = []
     @Published var purging = false
     @Published var notice: String?
+    @Published var alertsEnabled: Bool
+    @Published var weeklyEnabled = false
+    @Published var fullDiskAccess = true
+    @Published var battery: BatteryInfo?
+    @Published var topCPU: [AppUsage] = []
+    @Published var topMemory: [AppUsage] = []
+    @Published var activityExpanded: Bool
 
     let cliPath: String?
+    weak var panelWindow: NSWindow?
+    var hotStreak = 0
+    var trashBytes: Int64?
+    var trashCheckedAt: Date?
+    var trashMeasuring = false
     private var timer: Timer?
+    private var ticks = 0
+    private var activityTimer: Timer?
+    private let sampler = ProcSampler()
     private var current: CLIRun?
     private var lastEstimate: Date?
 
     init() {
+        let d = UserDefaults.standard
+        d.register(defaults: ["alertsEnabled": true, "activityExpanded": false])
+        alertsEnabled = d.bool(forKey: "alertsEnabled")
+        activityExpanded = d.bool(forKey: "activityExpanded")
         cliPath = Model.findCLI()
         launchAtLogin = SMAppService.mainApp.status == .enabled
-        refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+        weeklyEnabled = WeeklyJob.isInstalled
+        battery = Battery.read()
+        AlertCenter.shared.onOpen = { [weak self] in
+            Task { @MainActor in StatusItemOpener.open(panel: self?.panelWindow) }
         }
+        AlertCenter.shared.setUp(enabled: alertsEnabled)
+        refresh()
+        let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tick() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    private func tick() {
+        refresh()
+        ticks += 1
+        if ticks % 5 == 0 { checkAlerts() }
     }
 
     var busy: Bool {
@@ -126,7 +159,17 @@ final class Model: ObservableObject {
 
     nonisolated static func level(pct: Int) -> Int { pct >= 85 ? 2 : (pct >= 60 ? 1 : 0) }
 
-    nonisolated static func heatLevel(_ t: Double) -> Int { t >= 80 ? 2 : (t >= 60 ? 1 : 0) }
+    nonisolated static let appleSilicon: Bool = {
+        var v: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        return sysctlbyname("hw.optional.arm64", &v, &size, nil, 0) == 0 && v == 1
+    }()
+
+    nonisolated static let heatThresholds: (Double, Double) = appleSilicon ? (80, 95) : (60, 80)
+
+    nonisolated static func heatLevel(_ t: Double) -> Int {
+        t >= heatThresholds.1 ? 2 : (t >= heatThresholds.0 ? 1 : 0)
+    }
 
     var level: Int {
         var l = max(Model.level(pct: diskUsedPct), Model.level(pct: memUsedPct))
@@ -164,6 +207,8 @@ final class Model: ObservableObject {
         readDisk()
         readHistory()
         launchAtLogin = SMAppService.mainApp.status == .enabled
+        weeklyEnabled = WeeklyJob.isInstalled
+        fullDiskAccess = DiskAccess.hasFullAccess()
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let pct = Model.readMemFree()
             let s = Sensors.read()
@@ -178,6 +223,86 @@ final class Model: ObservableObject {
     func panelOpened() {
         refresh()
         refreshEstimates(force: false)
+        battery = Battery.read()
+        startActivity()
+    }
+
+    var panelVisible: Bool { panelWindow?.isVisible == true }
+
+    func setActivityExpanded(_ on: Bool) {
+        activityExpanded = on
+        UserDefaults.standard.set(on, forKey: "activityExpanded")
+        if on { startActivity() } else { stopActivity() }
+    }
+
+    func startActivity() {
+        guard activityExpanded, activityTimer == nil else { return }
+        sampler.reset()
+        sampleActivity()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.activityTick() }
+        let t = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.activityTick() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        activityTimer = t
+    }
+
+    func stopActivity() {
+        activityTimer?.invalidate()
+        activityTimer = nil
+    }
+
+    private func activityTick() {
+        guard activityExpanded, panelVisible else {
+            stopActivity()
+            return
+        }
+        sampleActivity()
+    }
+
+    private func sampleActivity() {
+        let apps = NSWorkspace.shared.runningApplications.filter {
+            $0.activationPolicy == .regular && !$0.isTerminated && $0.processIdentifier != getpid()
+        }
+        let refs = apps.compactMap { a in a.bundleURL.map { AppRef(pid: a.processIdentifier, bundlePath: $0.path) } }
+        sampler.sample(refs) { [weak self] result in
+            guard let self else { return }
+            let usages = apps.compactMap { a -> AppUsage? in
+                guard let r = result[a.processIdentifier] else { return nil }
+                return AppUsage(pid: a.processIdentifier, name: a.localizedName ?? a.bundleURL?.lastPathComponent ?? "?",
+                                icon: a.icon, cpu: r.cpu, memory: r.memory, canQuit: ProcSampler.canQuit(a))
+            }
+            if usages.contains(where: { $0.cpu != nil }) {
+                self.topCPU = Array(usages.sorted { ($0.cpu ?? 0) > ($1.cpu ?? 0) }.prefix(3))
+            }
+            self.topMemory = Array(usages.sorted { $0.memory > $1.memory }.prefix(3))
+            self.battery = Battery.read()
+        }
+    }
+
+    func quitApp(_ usage: AppUsage) {
+        guard usage.canQuit, let app = NSRunningApplication(processIdentifier: usage.pid) else { return }
+        app.terminate()
+    }
+
+    func setAlerts(_ on: Bool) {
+        alertsEnabled = on
+        UserDefaults.standard.set(on, forKey: "alertsEnabled")
+        if !on { hotStreak = 0 }
+        AlertCenter.shared.setUp(enabled: on)
+    }
+
+    func setWeekly(_ on: Bool) {
+        if on {
+            if let cli = cliPath { WeeklyJob.enable(cli: cli, lang: L.fr ? "fr" : "en") }
+        } else {
+            WeeklyJob.disable()
+        }
+        weeklyEnabled = WeeklyJob.isInstalled
+    }
+
+    func openFullDiskAccess() {
+        NSWorkspace.shared.open(DiskAccess.settingsURL)
     }
 
     func refreshEstimates(force: Bool) {

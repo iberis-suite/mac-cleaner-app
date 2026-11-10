@@ -58,9 +58,11 @@ struct PanelView: View {
     var body: some View {
         VStack(spacing: 14) {
             Text("Mac Cleaner").font(.system(size: 20, weight: .bold, design: .rounded))
+            if !model.fullDiskAccess { accessLine }
             if model.cliPath == nil { missingView }
             rings
             if model.phase == .idle {
+                activitySection
                 shortcutsGrid
                 cleanAllButton
                 toolsGrid
@@ -73,7 +75,128 @@ struct PanelView: View {
         .padding(16)
         .frame(width: 360)
         .background(.ultraThinMaterial)
+        .background(WindowReader { model.panelWindow = $0 })
         .onAppear { model.panelOpened() }
+    }
+
+    private var accessLine: some View {
+        Button { model.openFullDiskAccess() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "lock.shield")
+                Text(L.t("fda"))
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .semibold))
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @State private var usageMode = 0
+
+    private var activitySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button { model.setActivityExpanded(!model.activityExpanded) } label: {
+                HStack(spacing: 6) {
+                    Text(L.t("activity")).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                    if !model.activityExpanded, let b = model.battery {
+                        Image(systemName: batterySymbol(b)).font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text("\(b.charge) %").font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(model.activityExpanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if model.activityExpanded {
+                if let b = model.battery { batteryRow(b) }
+                Picker("", selection: $usageMode) {
+                    Text(L.t("cpu")).tag(0)
+                    Text(L.t("memory")).tag(1)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                Card {
+                    VStack(spacing: 0) {
+                        let list = usageMode == 0 ? model.topCPU : model.topMemory
+                        if list.isEmpty {
+                            Text(L.t("measuring")).font(.system(size: 11)).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, minHeight: 66)
+                        } else {
+                            ForEach(list) { usageRow($0) }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8)
+                }
+            }
+        }
+    }
+
+    private func batterySymbol(_ b: BatteryInfo) -> String {
+        if b.charging || b.onAC { return "battery.100.bolt" }
+        switch b.charge {
+        case ..<13: return "battery.0"
+        case ..<38: return "battery.25"
+        case ..<63: return "battery.50"
+        case ..<88: return "battery.75"
+        default: return "battery.100"
+        }
+    }
+
+    private func batteryRow(_ b: BatteryInfo) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Image(systemName: batterySymbol(b))
+                    .font(.system(size: 13))
+                    .foregroundStyle(b.needsService ? Color.orange : Color.accentBlue)
+                Text("\(b.charge) %").font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                Text("·").foregroundStyle(.tertiary)
+                Text(String(format: L.t("batteryLine"), b.health, b.cycles,
+                            L.t(b.needsService ? "batteryService" : "batteryNormal")))
+                    .font(.system(size: 11))
+                    .foregroundStyle(b.needsService ? Color.orange : Color.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            if !b.onAC, let top = model.topCPU.first {
+                Text(String(format: L.t("drains"), top.name))
+                    .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+    }
+
+    private func usageRow(_ u: AppUsage) -> some View {
+        HStack(spacing: 8) {
+            if let icon = u.icon {
+                Image(nsImage: icon).resizable().frame(width: 18, height: 18)
+            } else {
+                Image(systemName: "app").frame(width: 18, height: 18)
+            }
+            Text(u.name).font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 4)
+            Text(usageMode == 0 ? String(format: "%.1f %%", u.cpu ?? 0) : L.human(bytes: u.memory))
+                .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
+            if u.canQuit {
+                Button(L.t("quitApp")) { model.quitApp(u) }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(Color.accentBlue)
+            } else {
+                Text(L.t("quitApp")).font(.system(size: 10.5, weight: .medium)).hidden()
+            }
+        }
+        .frame(height: 22)
     }
 
     private var missingView: some View {
@@ -281,6 +404,15 @@ struct PanelView: View {
                     get: { model.launchAtLogin },
                     set: { model.setLaunchAtLogin($0) }
                 ))
+                Toggle(L.t("alerts"), isOn: Binding(
+                    get: { model.alertsEnabled },
+                    set: { model.setAlerts($0) }
+                ))
+                Toggle(L.t("weekly"), isOn: Binding(
+                    get: { model.weeklyEnabled },
+                    set: { model.setWeekly($0) }
+                ))
+                .disabled(model.cliPath == nil)
                 Button(L.t("menu")) { model.openInTerminal(nil) }
                     .disabled(model.cliPath == nil)
                 Divider()
