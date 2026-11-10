@@ -118,7 +118,7 @@ final class CLIRun {
 
 @MainActor
 final class Model: ObservableObject {
-    static let installHint = "brew install chaibialaa/tap/mac-cleaner"
+    static let installHint = "brew install iberis-suite/tap/mac-cleaner"
     static let estimated = ["temp", "caches", "trash"]
 
     @Published var diskTotal: Int64 = 0

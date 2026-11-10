@@ -1,7 +1,7 @@
 import Foundation
 
 enum WeeklyJob {
-    static let label = "com.chaibialaa.mac-cleaner.weekly"
+    static let label = "com.iberis-suite.mac-cleaner.weekly"
 
     static var plistURL: URL {
         URL(fileURLWithPath: NSHomeDirectory())
