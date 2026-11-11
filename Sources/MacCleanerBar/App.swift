@@ -137,16 +137,17 @@ final class Hub: ObservableObject {
 
 struct MainView: View {
     @ObservedObject var hub: Hub
+    @ObservedObject var model: Model
 
     var body: some View {
         HStack(spacing: 0) {
             sidebar
-            Divider()
+            Rectangle().fill(Theme.divider).frame(width: 1)
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: MainWindow.size.width, minHeight: MainWindow.size.height)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Theme.background)
         .background(
             Button("") { hub.escape() }
                 .keyboardShortcut(.cancelAction)
@@ -158,7 +159,7 @@ struct MainView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 2) {
             Color.clear.frame(height: 30)
-            sidebarRow("home", icon: "house", title: L.t("home"))
+            sidebarRow("home", icon: "square.grid.2x2", title: L.t("home"))
             ForEach(Catalog.groups, id: \.0) { group in
                 Text(L.t(group.0)).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.secondary)
                     .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 2)
@@ -170,7 +171,7 @@ struct MainView: View {
         .padding(.bottom, 12)
         .frame(width: 210)
         .frame(maxHeight: .infinity)
-        .background(Color.primary.opacity(0.035))
+        .background(Theme.sidebar)
     }
 
     private func sidebarRow(_ t: String, icon: String, title: String) -> some View {
@@ -178,15 +179,15 @@ struct MainView: View {
         return Button { hub.select(t) } label: {
             HStack(spacing: 8) {
                 Image(systemName: icon).font(.system(size: 12)).frame(width: 18)
-                    .foregroundStyle(on ? Color.white : Color.accentBlue)
+                    .foregroundStyle(on ? Theme.onAccent : Theme.accent)
                 Text(title).font(.system(size: 12.5)).lineLimit(1).minimumScaleFactor(0.8)
                 Spacer(minLength: 4)
                 if hub.busy(t) { ProgressView().controlSize(.mini) }
             }
-            .foregroundStyle(on ? Color.white : Color.primary)
+            .foregroundStyle(on ? Theme.onAccent : Color.primary)
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
-            .background(on ? Color.accentBlue : Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .background(on ? AnyShapeStyle(Theme.button) : AnyShapeStyle(Color.clear), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -196,7 +197,7 @@ struct MainView: View {
     private var detail: some View {
         let home = { hub.current = "home" }
         switch hub.current {
-        case "home": HomeView(hub: hub)
+        case "home": DashboardView(hub: hub, model: model)
         case "uninstall": UninstallView(model: hub.uninstall, home: home)
         case "diskmap": DiskMapView(model: hub.diskMap, home: home)
         case "maintenance", "privacy": CareView(model: hub.careModel(hub.current), home: home).id(hub.current)
@@ -205,48 +206,188 @@ struct MainView: View {
     }
 }
 
-struct HomeView: View {
+struct DashboardView: View {
     @ObservedObject var hub: Hub
+    @ObservedObject var model: Model
+    @ObservedObject var net = NetworkMonitor.shared
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Color.clear.frame(height: 18)
-            Text("Mac Cleaner").font(.system(size: 20, weight: .bold, design: .rounded))
-            Text(L.t("chooseTool")).font(.system(size: 12)).foregroundStyle(.secondary)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(Catalog.groups, id: \.0) { group in
-                        Text(L.t(group.0)).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-                            ForEach(group.1, id: \.self) { card($0) }
-                        }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Color.clear.frame(height: 12)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L.t("dashboard")).font(.system(size: 22, weight: .bold, design: .rounded))
+                    Text(L.t("chooseTool")).font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                HStack(spacing: 10) {
+                    ringCard(Ring(fraction: Double(model.diskUsedPct) / 100, value: "\(model.diskUsedPct) %", label: L.t("disk"),
+                                  tint: model.diskUsedPct >= 85 ? .level(Model.level(pct: model.diskUsedPct)) : Theme.accent, size: 92),
+                             lines: [String(format: L.t("freeDisk"), model.freeLabel),
+                                     String(format: L.t("ofTotal"), L.human(bytes: model.diskTotal))])
+                    ringCard(Ring(fraction: Double(model.memUsedPct) / 100, value: "\(model.memUsedPct) %", label: L.t("memory"),
+                                  tint: model.memUsedPct >= 85 ? .level(2) : Theme.accent, size: 92),
+                             lines: [String(format: L.t("ramUsed"), model.memUsedPct), " "])
+                    let t = model.sensors.temperature
+                    let l = min(2, model.heatLevel)
+                    ringCard(Ring(fraction: t.map { $0 / ChipProfile.current.hot }, value: t.map { L.deg($0) } ?? "—", label: L.t("heat"),
+                                  tint: l > 0 ? .level(l) : Theme.accent, size: 92),
+                             lines: [Heat.label(model.heatLevel), model.sensors.fanCount.map { L.fans($0, rpm: model.sensors.fanRPM) } ?? " "],
+                             firstColor: Color.level(l))
+                }
+                NetworkCard(net: net)
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(spacing: 10) {
+                        freedCard
+                        if let b = model.battery { batteryCard(b) }
+                    }
+                    VStack(spacing: 10) {
+                        estimatesCard
+                        weeklyCard
                     }
                 }
+                historyCard
             }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 20)
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear {
+            model.refresh()
+            model.refreshEstimates(force: false)
+            net.retain("dashboard")
+        }
+        .onDisappear { net.release("dashboard") }
     }
 
-    private func card(_ t: String) -> some View {
-        Button { hub.select(t) } label: {
-            Card {
-                HStack(spacing: 10) {
-                    Image(systemName: Catalog.icon(t)).font(.system(size: 15)).foregroundStyle(Color.accentBlue)
-                        .frame(width: 34, height: 34)
-                        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(L.t(t)).font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
-                        Text(L.t("desc_" + t)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                    if hub.busy(t) { ProgressView().controlSize(.mini) }
+    private func ringCard(_ ring: Ring, lines: [String], firstColor: Color = .secondary) -> some View {
+        VStack(spacing: 6) {
+            ring
+            Text(lines[0]).font(.system(size: 11.5, weight: .medium)).foregroundStyle(firstColor).lineLimit(1)
+            Text(lines[1]).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
+        }
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity)
+        .themeCard(14)
+    }
+
+    private func cardTitle(_ text: String, symbol: String) -> some View {
+        HStack(spacing: 8) {
+            IconTile(symbol: symbol, size: 26, font: 12)
+            Text(text).font(.system(size: 12.5, weight: .semibold))
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var freedCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            cardTitle(L.t("freedTitle"), symbol: "sparkles")
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(L.human(kb: model.freedMonth)).font(.system(size: 26, weight: .bold, design: .rounded)).monospacedDigit()
+                Text(L.t("thisMonth")).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            Text(String(format: L.t("freedAll"), L.human(kb: model.freedTotal))).font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .themeCard(14)
+    }
+
+    private var estimatesCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            cardTitle(L.t("toClean"), symbol: "wand.and.stars")
+            ForEach(["temp", "caches", "trash"], id: \.self) { c in
+                HStack(spacing: 8) {
+                    Image(systemName: ItemStyle.command(c)).font(.system(size: 12)).foregroundStyle(Theme.accent).frame(width: 18)
+                    Text(L.t(c)).font(.system(size: 12))
+                    Spacer()
+                    Text(estimate(c)).font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                    Button(L.t("open")) { model.openPanelPreview(c) }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.accent)
+                        .disabled(model.busy || model.cliPath == nil)
                 }
-                .padding(10)
-                .contentShape(Rectangle())
             }
         }
-        .buttonStyle(.plain)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .themeCard(14)
+    }
+
+    private func estimate(_ c: String) -> String {
+        if c == "trash" && model.trashUnreadable { return "\u{2014}" }
+        if let kb = model.estimates[c] { return L.human(kb: kb) }
+        return model.estimating.contains(c) ? L.t("estimating") : "\u{2014}"
+    }
+
+    private func batteryCard(_ b: BatteryInfo) -> some View {
+        HStack(spacing: 10) {
+            IconTile(symbol: b.charging || b.onAC ? "battery.100.bolt" : "battery.75", size: 34, font: 14)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(L.t("battery")) · \(b.charge) %").font(.system(size: 12.5, weight: .semibold)).monospacedDigit()
+                Text(String(format: L.t("batteryLine"), b.health, b.cycles, L.t(b.needsService ? "batteryService" : "batteryNormal")))
+                    .font(.system(size: 11)).foregroundStyle(b.needsService ? Theme.warn : Color.secondary)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .themeCard()
+    }
+
+    private var weeklyCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                cardTitle(L.t("weekly"), symbol: "calendar.badge.clock")
+                Toggle("", isOn: Binding(get: { model.weeklyEnabled }, set: { model.setWeekly($0) }))
+                    .toggleStyle(.switch).controlSize(.mini).labelsHidden()
+                    .disabled(model.cliPath == nil)
+            }
+            if let next = model.weeklyNext {
+                Text(String(format: L.t("nextRun"), DashboardView.dateTime(next))).font(.system(size: 11)).foregroundStyle(.secondary)
+                if let last = model.weeklyLast {
+                    Text(String(format: L.t("lastRun"), DashboardView.dateTime(last))).font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            } else {
+                Text(L.t("weeklyOff")).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .themeCard(14)
+    }
+
+    private var historyCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            cardTitle(L.t("historyTitle"), symbol: "clock.arrow.circlepath")
+            if model.history.isEmpty {
+                Text(L.t("historyEmpty")).font(.system(size: 11.5)).foregroundStyle(.secondary).padding(.vertical, 6)
+            } else {
+                ForEach(model.history) { h in
+                    HStack(spacing: 8) {
+                        Image(systemName: h.symbol).font(.system(size: 11)).foregroundStyle(Theme.accent).frame(width: 18)
+                        Text(h.title).font(.system(size: 12)).lineLimit(1)
+                        if !h.note.isEmpty {
+                            Text(h.note).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                        }
+                        Spacer(minLength: 6)
+                        Text(h.kb > 0 ? L.human(kb: h.kb) : "\u{2014}").font(.system(size: 11.5, weight: .semibold)).monospacedDigit()
+                        Text(DashboardView.dateTime(h.date)).font(.system(size: 10.5)).foregroundStyle(.secondary).monospacedDigit()
+                            .frame(width: 128, alignment: .trailing)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .themeCard(14)
+    }
+
+    static func dateTime(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: L.fr ? "fr_FR" : "en_US")
+        f.setLocalizedDateFormatFromTemplate("EEE d MMM HH:mm")
+        return f.string(from: d)
     }
 }
 
@@ -265,14 +406,14 @@ final class MainWindow: NSObject, NSWindowDelegate {
             model?.refreshEstimates(force: true)
         }
         model.panelWindow?.orderOut(nil)
-        let w = window ?? make(hub)
+        let w = window ?? make(hub, model: model)
         hub.select(tool)
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
     }
 
-    private func make(_ hub: Hub) -> NSWindow {
+    private func make(_ hub: Hub, model: Model) -> NSWindow {
         let w = NSWindow(contentRect: NSRect(origin: .zero, size: MainWindow.size),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                          backing: .buffered, defer: false)
@@ -282,7 +423,7 @@ final class MainWindow: NSObject, NSWindowDelegate {
         w.isReleasedWhenClosed = false
         w.minSize = MainWindow.size
         w.delegate = self
-        w.contentView = NSHostingView(rootView: MainView(hub: hub))
+        w.contentView = NSHostingView(rootView: MainView(hub: hub, model: model))
         let saved = UserDefaults.standard.string(forKey: "NSWindow Frame \(MainWindow.autosave)") != nil
         w.setFrameAutosaveName(MainWindow.autosave)
         if !saved { MainWindow.center(w) }

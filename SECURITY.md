@@ -6,7 +6,8 @@ Only the latest release of Mac Cleaner receives security fixes.
 
 | Version | Supported |
 | ------- | --------- |
-| 0.1.x   | Yes       |
+| 0.2.x   | Yes       |
+| < 0.2   | No        |
 
 ## Reporting a vulnerability
 
@@ -20,4 +21,4 @@ You will get a first answer within 7 days. Once a fix is released, the advisory 
 
 ## Scope
 
-Mac Cleaner runs locally and sends no data over the network. It deletes files only after a preview and an explicit confirmation, and asks for an administrator password through the macOS dialog only for system maintenance tasks. Issues that bypass the preview, delete files outside the listed items, or escalate privileges are in scope.
+Mac Cleaner runs locally and sends no data over the network, with one exception: the speed test. Only when you click **Test speed** does it run `networkQuality`, the tool built into macOS, which measures throughput against Apple's servers; nothing else is sent, and no third-party service is used. Showing the Wi-Fi name requires macOS location access, asked once and used for nothing else. It deletes files only after a preview and an explicit confirmation, and asks for an administrator password through the macOS dialog only for system maintenance tasks. Issues that bypass the preview, delete files outside the listed items, or escalate privileges are in scope.

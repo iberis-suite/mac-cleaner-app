@@ -60,8 +60,8 @@ struct SizeBar: View {
     var body: some View {
         GeometryReader { g in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.primary.opacity(0.08))
-                Capsule().fill(Color.accentBlue.opacity(0.85))
+                Capsule().fill(Theme.track)
+                Capsule().fill(Theme.button)
                     .frame(width: max(fraction > 0 ? 3 : 0, g.size.width * min(1, max(0, fraction))))
             }
         }
@@ -82,20 +82,16 @@ struct ItemRow: View {
             if checkable {
                 Image(systemName: on ? "checkmark.square.fill" : "square")
                     .font(.system(size: 14))
-                    .foregroundStyle(on ? Color.accentBlue : Color.secondary)
+                    .foregroundStyle(on ? Theme.accent : Color.secondary)
             }
-            Image(systemName: ItemStyle.symbol(item))
-                .font(.system(size: 12))
-                .foregroundStyle(Color.accentBlue)
-                .frame(width: 22, height: 22)
-                .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            IconTile(symbol: ItemStyle.symbol(item), size: 24, font: 12)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(item.label).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
                     if excluded {
                         Text(L.t("excluded")).font(.system(size: 9.5, weight: .medium)).foregroundStyle(.secondary)
                             .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Color.primary.opacity(0.08), in: Capsule())
+                            .background(Theme.tile, in: Capsule())
                     }
                     Spacer(minLength: 6)
                     Text(L.human(kb: item.kb)).font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
@@ -105,7 +101,7 @@ struct ItemRow: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(checkable && on ? Color.accentBlue.opacity(0.12) : Color.clear,
+        .background(checkable && on ? Theme.selection : Color.clear,
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .contentShape(Rectangle())
         .onTapGesture { if checkable { toggle() } }
@@ -149,48 +145,8 @@ struct SkippedRow: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .themeCard(9)
         .help(L.t("skippedHelp"))
-    }
-}
-
-struct DetailsBox: View {
-    let text: String
-    var loading = false
-    var height: CGFloat = 140
-    var onOpen: () -> Void = {}
-    @State private var open = false
-
-    var body: some View {
-        let isOpen = open
-        VStack(alignment: .leading, spacing: 6) {
-            Button {
-                open = !isOpen
-                if !isOpen { onOpen() }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(isOpen ? 90 : 0))
-                    Text(L.t("details")).font(.system(size: 11.5, weight: .medium)).foregroundStyle(.secondary)
-                    if loading { ProgressView().controlSize(.mini) }
-                    Spacer()
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            if isOpen {
-                ScrollView([.horizontal, .vertical]) {
-                    Text(text.isEmpty ? (loading ? L.t("running") : L.t("noOutput")) : text)
-                        .font(.system(size: 10, design: .monospaced))
-                        .fixedSize(horizontal: true, vertical: true)
-                        .textSelection(.enabled)
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                }
-                .frame(height: height)
-                .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            }
-        }
     }
 }
 
@@ -211,8 +167,9 @@ struct BlueButton: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 16)
             .padding(.vertical, 7)
-            .background((destructive ? Color.red : Color.accentBlue).opacity(enabled && !busy ? 1 : 0.4),
+            .background(destructive ? AnyShapeStyle(Theme.destructive) : AnyShapeStyle(Theme.button),
                         in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .opacity(enabled && !busy ? 1 : 0.45)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -230,7 +187,7 @@ struct SecondaryButton: View {
                 .font(.system(size: 13))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
-                .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .themeCard(8)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -247,7 +204,7 @@ struct BackButton: View {
                 Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
                 Text(title).font(.system(size: 12, weight: .medium))
             }
-            .foregroundStyle(Color.accentBlue)
+            .foregroundStyle(Theme.accent)
             .padding(.vertical, 2)
             .contentShape(Rectangle())
         }
@@ -294,14 +251,14 @@ struct ErrorNote: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(.orange)
+                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 11)).foregroundStyle(Theme.warn)
                 Text(summary.isEmpty ? L.t("cleanFailed") : summary)
                     .font(.system(size: 12, weight: .medium)).lineLimit(2)
                 Spacer(minLength: 0)
                 if !detail.isEmpty {
                     Button { open.toggle() } label: {
                         HStack(spacing: 3) {
-                            Text(L.t("details"))
+                            Text(L.t("techDetails"))
                             Image(systemName: "chevron.right").rotationEffect(.degrees(open ? 90 : 0))
                         }
                         .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -316,11 +273,11 @@ struct ErrorNote: View {
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
                 .frame(height: 110)
-                .background(Color.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(Theme.console, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
         .padding(10)
-        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(Theme.warnFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
@@ -329,11 +286,139 @@ struct EmptyNote: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            Image(systemName: "checkmark.circle").font(.system(size: 24)).foregroundStyle(Color.green)
+            Image(systemName: "checkmark.circle").font(.system(size: 24)).foregroundStyle(Theme.good)
             Text(text).font(.system(size: 12)).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 40)
+    }
+}
+
+
+struct ScanStatus: View {
+    let listing: Bool
+    var step: String?
+    let count: Int
+    var kb: Double?
+    var stop: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if listing {
+                ProgressView().controlSize(.small)
+                Text(step ?? L.t("searching")).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.accent)
+            }
+            Text(summary).font(.system(size: 12)).monospacedDigit().foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            if listing, let stop {
+                Button(L.t("stop")) { stop() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.accent)
+            }
+        }
+        .frame(minHeight: 18)
+    }
+
+    private var summary: String {
+        let found = String(format: L.t("foundN"), count)
+        guard let kb, count > 0 else { return found }
+        return found + " · " + L.human(kb: kb)
+    }
+}
+
+struct SummaryCard: View {
+    let symbol: String
+    let title: String
+    var subtitle = ""
+    var busy = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if busy {
+                ProgressView().controlSize(.small).frame(width: 30, height: 30)
+            } else {
+                IconTile(symbol: symbol)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                if !subtitle.isEmpty {
+                    Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .themeCard()
+    }
+}
+
+struct StepList: View {
+    let steps: [(String, String)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(steps.enumerated()), id: \.offset) { _, s in
+                StepRow(title: s.0, state: s.1)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .themeCard()
+    }
+}
+
+struct StepRow: View {
+    let title: String
+    let state: String
+    var detail = ""
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Group {
+                switch state {
+                case "running": ProgressView().controlSize(.mini)
+                case "done": Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.good)
+                case "failed": Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.bad)
+                case "skipped": Image(systemName: "minus.circle").foregroundStyle(.secondary)
+                default: Image(systemName: "circle").foregroundStyle(.tertiary)
+                }
+            }
+            .font(.system(size: 13))
+            .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 12))
+                if state == "failed" || !detail.isEmpty {
+                    Text(state == "failed" ? L.t("stepFailed") : detail).font(.system(size: 10.5))
+                        .foregroundStyle(state == "failed" ? Theme.bad : Color.secondary)
+                }
+            }
+            Spacer(minLength: 6)
+            Text(L.t("state_" + state)).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct ResultCard: View {
+    let result: ToolResult
+
+    var body: some View {
+        if result.ok {
+            HStack(spacing: 12) {
+                Image(systemName: "checkmark.circle.fill").font(.system(size: 30)).foregroundStyle(Theme.good)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(result.title).font(.system(size: 16, weight: .bold, design: .rounded)).monospacedDigit()
+                    if !result.detail.isEmpty {
+                        Text(result.detail).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .themeCard()
+        } else {
+            ErrorNote(summary: result.title, detail: result.raw)
+        }
     }
 }
 
@@ -378,36 +463,33 @@ struct PreviewSheet: View {
                     .keyboardShortcut(.cancelAction)
             }
             HStack(spacing: 8) {
-                Image(systemName: ItemStyle.command(command))
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.accentBlue)
-                    .frame(width: 26, height: 26)
-                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                IconTile(symbol: ItemStyle.command(command), size: 26, font: 13)
                 Text(title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                 Spacer()
-                if model.busy { ProgressView().controlSize(.small) }
             }
             switch model.phase {
             case .previewing:
-                waiting(L.t("analyzing"))
+                ScanStatus(listing: true, count: rows.count, kb: rows.reduce(0) { $0 + $1.kb }) { model.stopPreview() }
+                if rows.isEmpty {
+                    waiting(L.t("searching"))
+                } else {
+                    listCard
+                }
+                previewFooter
             case .previewReady:
                 if let error = model.sheetError {
-                    ErrorNote(summary: error)
+                    ErrorNote(summary: error, detail: ToolItem.humanLines(model.output))
                 } else {
                     listCard
                     if !skipped.isEmpty { SkippedRow(items: skipped) }
                 }
-                DetailsBox(text: model.output, loading: model.detailsLoading) { model.loadDetails() }
-                    .id(command)
                 previewFooter
             case .cleaning:
                 waiting(L.t("cleaning"))
-                DetailsBox(text: model.output, loading: true)
                 Text(L.t("keepRunningPanel")).font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             case .cleaned:
                 resultView
-                DetailsBox(text: model.output)
                 HStack {
                     Spacer()
                     BlueButton(title: L.t("done")) { model.dismiss() }.keyboardShortcut(.defaultAction)
@@ -419,22 +501,21 @@ struct PreviewSheet: View {
     }
 
     private func waiting(_ text: String) -> some View {
-        Card {
-            VStack(spacing: 10) {
-                ProgressView().controlSize(.regular)
-                Text(text).font(.system(size: 12)).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, minHeight: 150)
+        VStack(spacing: 10) {
+            ProgressView().controlSize(.regular)
+            Text(text).font(.system(size: 12)).foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity, minHeight: 150)
+        .themeCard()
     }
 
     private var listCard: some View {
         let items = rows
         let maxKB = items.map(\.kb).max() ?? 0
-        return Card {
+        return Group {
             if items.isEmpty {
                 VStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle").font(.system(size: 22)).foregroundStyle(Color.green)
+                    Image(systemName: "checkmark.circle").font(.system(size: 22)).foregroundStyle(Theme.good)
                     Text(L.t("nothingToClean")).font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, minHeight: 110)
@@ -453,6 +534,7 @@ struct PreviewSheet: View {
                 .frame(height: min(300, CGFloat(items.count) * 39 + (command == "temp" ? 60 : 12)))
             }
         }
+        .themeCard()
     }
 
     @ViewBuilder
@@ -468,7 +550,7 @@ struct PreviewSheet: View {
                 Button(L.t(all ? "selectNone" : "selectAll")) { model.setSheet(indexes, on: !all) }
                     .buttonStyle(.plain)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.accentBlue)
+                    .foregroundStyle(Theme.accent)
             }
             .padding(.horizontal, 8)
             .padding(.top, 6)
@@ -501,22 +583,16 @@ struct PreviewSheet: View {
     @ViewBuilder
     private var resultView: some View {
         if let r = model.result {
-            Card {
+            if r.ok {
                 VStack(spacing: 8) {
-                    Image(systemName: r.ok ? "checkmark.circle.fill" : "xmark.octagon.fill")
-                        .font(.system(size: 40))
-                        .foregroundStyle(r.ok ? Color.green : Color.red)
-                    Text(r.ok ? String(format: L.t("freedAmount"), L.human(kb: r.freedKB)) : L.t("cleanFailed"))
+                    Image(systemName: "checkmark.circle.fill").font(.system(size: 40)).foregroundStyle(Theme.good)
+                    Text(String(format: L.t("freedAmount"), L.human(kb: r.freedKB)))
                         .font(.system(size: 22, weight: .bold, design: .rounded)).monospacedDigit()
-                    if !r.ok {
-                        Text(r.message).font(.system(size: 11)).foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center).lineLimit(2)
-                    }
-                    if r.ok && !r.sections.isEmpty {
+                    if !r.sections.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
                             ForEach(Array(r.sections.prefix(12).enumerated()), id: \.offset) { _, s in
                                 HStack(spacing: 6) {
-                                    Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.green)
+                                    Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.good)
                                     Text(s).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
                                 }
                             }
@@ -531,6 +607,9 @@ struct PreviewSheet: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(14)
+                .themeCard()
+            } else {
+                ErrorNote(summary: r.message.isEmpty ? L.t("cleanFailed") : r.message, detail: ToolItem.humanLines(model.output))
             }
         }
     }

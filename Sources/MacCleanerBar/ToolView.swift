@@ -9,22 +9,43 @@ struct ToolItem: Identifiable, Hashable {
     let type: String
     let state: String
 
-    var id: String { "\(type)|\(index)|\(path)" }
+    var id: String { "\(type)|\(index)|\(path)|\(label)" }
 
     var key: String { type == "unity" ? "u\(index)" : "\(index)" }
 
+    static func parse(_ line: String) -> ToolItem? {
+        let c = line.components(separatedBy: "\t")
+        guard c.count >= 5, let i = Int(c[0]), let kb = Double(c[1]) else { return nil }
+        return ToolItem(index: i, kb: kb, label: c[2], path: c[3], type: c[4], state: c.count > 5 ? c[5] : "")
+    }
+
     static func parseList(_ text: String) -> [ToolItem] {
-        text.components(separatedBy: "\n").compactMap { line in
-            let c = line.components(separatedBy: "\t")
-            guard c.count >= 5, let i = Int(c[0]), let kb = Double(c[1]) else { return nil }
-            return ToolItem(index: i, kb: kb, label: c[2], path: c[3], type: c[4], state: c.count > 5 ? c[5] : "")
-        }
+        text.components(separatedBy: "\n").compactMap(parse)
+    }
+
+    static func machine(_ line: String) -> Bool {
+        line.hasPrefix("STEP\t") || line.hasPrefix("RESULT\t") || parse(line) != nil
+    }
+
+    static func humanLines(_ text: String) -> String {
+        text.components(separatedBy: "\n").filter { !machine($0) }.joined(separator: "\n")
+    }
+
+    static func results(_ text: String) -> [[String]] {
+        text.components(separatedBy: "\n").filter { $0.hasPrefix("RESULT\t") }.map { Array($0.components(separatedBy: "\t").dropFirst()) }
     }
 
     var shortPath: String {
         let home = NSHomeDirectory()
         return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
     }
+}
+
+struct ToolResult: Equatable {
+    let ok: Bool
+    let title: String
+    var detail = ""
+    var raw = ""
 }
 
 enum ToolStage: Equatable {
@@ -42,6 +63,7 @@ final class ToolModel: ObservableObject {
     let cliPath: String?
     @Published var items: [ToolItem] = []
     @Published var skipped: [ToolItem] = []
+    @Published var info: [ToolItem] = []
     @Published var selected: Set<String> = []
     @Published var collapsed: Set<Int> = []
     @Published var minMB: String
@@ -49,12 +71,19 @@ final class ToolModel: ObservableObject {
     @Published var dir = NSHomeDirectory()
     @Published var stage: ToolStage = .idle
     @Published var listing = false
+    @Published var step: String?
+    @Published var steps: [String: String] = [:]
     @Published var output = ""
     @Published var message: String?
     @Published var failed = false
+    @Published var result: ToolResult?
     var onChange: (() -> Void)?
     private var run: CLIRun?
     private var generation = 0
+
+    static let historyAction: [String: String] = [
+        "large": "m4", "downloads": "m6", "duplicates": "m8", "startup": "m7", "dev": "md", "cachesAdv": "m5", "system": "ms",
+    ]
 
     init(tool: String, cliPath: String?) {
         self.tool = tool
@@ -65,6 +94,8 @@ final class ToolModel: ObservableObject {
     var command: String { tool == "cachesAdv" ? "caches" : tool }
 
     var needsSudo: Bool { tool == "system" || tool == "startup" }
+
+    var sortsBySize: Bool { tool == "large" || tool == "downloads" }
 
     var actionLabel: String {
         switch tool {
@@ -95,64 +126,119 @@ final class ToolModel: ObservableObject {
         return args
     }
 
-    var selectedKB: Double {
-        items.filter { $0.type != "keep" && selected.contains($0.key) }.reduce(0) { $0 + $1.kb }
+    var chosen: [ToolItem] {
+        items.filter { $0.type != "keep" && selected.contains($0.key) }
     }
 
-    var hasSelection: Bool { tool == "system" || !selected.isEmpty }
+    var selectedKB: Double { chosen.reduce(0) { $0 + $1.kb } }
+
+    var hasSelection: Bool { tool == "system" ? !info.isEmpty : !selected.isEmpty }
 
     var busy: Bool { listing || stage == .previewing || stage == .working }
 
-    func load(keepOutput: Bool = false) {
+    var foundCount: Int {
+        switch tool {
+        case "duplicates": return Set(items.map(\.index)).count
+        default: return items.count
+        }
+    }
+
+    var foundKB: Double {
+        tool == "duplicates" ? items.filter { $0.type == "copy" }.reduce(0) { $0 + $1.kb } : items.reduce(0) { $0 + $1.kb }
+    }
+
+    func load(keepResult: Bool = false) {
         run?.cancel()
         generation += 1
         let gen = generation
-        if !keepOutput {
-            output = ""
+        if !keepResult {
             message = nil
+            result = nil
             stage = .idle
         }
+        output = ""
         failed = false
+        step = nil
+        let previous = Set(items.filter { selected.contains($0.key) }.map(\.path))
+        let auto = tool == "cachesAdv" && !keepResult && selected.isEmpty
+        items = []
+        skipped = []
+        info = []
+        selected = []
         guard let cli = cliPath else {
             message = L.t("missing") + " " + Model.installHint
+            failed = true
             return
         }
         listing = true
-        let args = tool == "system" ? ["system", "--dry-run"] : [command, "--list"] + params
-        run = CLIRun.start(cli: cli, args: args) { [weak self] text, status in
+        run = CLIRun.start(cli: cli, args: [command, "--list"] + params, line: { [weak self] l in
+            guard let self, self.generation == gen else { return }
+            if l.hasPrefix("STEP\t") {
+                self.step = String(l.dropFirst(5))
+                return
+            }
+            guard let item = ToolItem.parse(l) else { return }
+            self.add(item, previous: previous, auto: auto)
+        }) { [weak self] text, status in
             guard let self, self.generation == gen else { return }
             self.listing = false
-            if self.tool == "system" {
-                self.output = ToolModel.clean(text)
-            } else {
-                let all = ToolItem.parseList(text)
-                self.items = all.filter { $0.index > 0 }
-                self.skipped = all.filter { $0.index == 0 }
-                let keys = Set(self.items.map(\.key))
-                self.selected = self.selected.intersection(keys)
-                if self.tool == "cachesAdv" && !keepOutput && self.selected.isEmpty {
-                    self.selected = Set(self.items.filter {
-                        $0.state != "excluded" && !["docker", "nodemod", "devsupport"].contains($0.type) && $0.kb > 0
-                    }.map(\.key))
-                }
-            }
+            self.step = nil
+            self.output = text
             if status != 0 {
                 self.failed = true
-                self.message = UninstallModel.summary(text, status: status)
+                self.message = UninstallModel.summary(ToolItem.humanLines(text), status: status)
             }
         }
     }
 
+    private func add(_ item: ToolItem, previous: Set<String>, auto: Bool) {
+        if tool == "system" {
+            info.append(item)
+            return
+        }
+        guard item.index > 0 else {
+            skipped.append(item)
+            return
+        }
+        if sortsBySize {
+            let i = items.firstIndex { $0.kb < item.kb } ?? items.count
+            items.insert(item, at: i)
+        } else {
+            items.append(item)
+        }
+        if previous.contains(item.path) && item.type != "keep" { selected.insert(item.key) }
+        if auto && item.state != "excluded" && !["docker", "nodemod", "devsupport"].contains(item.type) && item.kb > 0 {
+            selected.insert(item.key)
+        }
+    }
 
-    nonisolated static func clean(_ text: String) -> String {
-        text.components(separatedBy: "\n").filter { !$0.contains("?") || !$0.contains("›") }
-            .joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    func stopSearch() {
+        guard listing else { return }
+        generation += 1
+        run?.cancel()
+        run = nil
+        listing = false
+        step = nil
+        failed = false
+        message = L.t("searchStopped")
     }
 
     func toggle(_ item: ToolItem) {
-        guard !busy, item.type != "keep" else { return }
+        guard stage != .working, stage != .previewing, item.type != "keep" else { return }
         if selected.contains(item.key) { selected.remove(item.key) } else { selected.insert(item.key) }
-        if stage == .preview || stage == .done { stage = .idle; output = "" }
+        if stage == .preview || stage == .done { resetStage() }
+    }
+
+    func setAll(_ keys: [String], on: Bool) {
+        guard stage != .working, stage != .previewing else { return }
+        if on { selected.formUnion(keys) } else { selected.subtract(keys) }
+        if stage == .preview || stage == .done { resetStage() }
+    }
+
+    private func resetStage() {
+        stage = .idle
+        result = nil
+        message = nil
     }
 
     func act() {
@@ -161,48 +247,79 @@ final class ToolModel: ObservableObject {
         case .preview:
             if needsSudo && CLIRun.askpassPath == nil && !Demo.enabled {
                 message = L.t("noAskpass")
+                failed = true
                 return
             }
+            let picked = chosen
+            let estimate = selectedKB
+            let before = Model.historyLines().count
             stage = .working
             message = nil
-            run = CLIRun.start(cli: cli, args: [command, "--yes"] + selectArgs + params, askpass: needsSudo,
-                               output: { [weak self] t in self?.output = ToolModel.clean(t) }) { [weak self] text, status in
+            failed = false
+            steps = tool == "system" ? ["thin": "waiting", "purge": "waiting"] : [:]
+            run = CLIRun.start(cli: cli, args: [command, "--yes"] + selectArgs + params, askpass: needsSudo, line: { [weak self] l in
+                guard let self, l.hasPrefix("STEP\t") else { return }
+                let c = l.components(separatedBy: "\t")
+                if c.count >= 3 { self.steps[c[1]] = c[2] }
+            }) { [weak self] text, status in
                 guard let self else { return }
-                self.output = ToolModel.clean(text)
-                self.stage = .done
-                self.failed = status != 0
-                self.message = status == 0 ? L.t("doneNote") : UninstallModel.summary(text, status: status)
-                Hub.finished(self.tool, ok: status == 0)
-                if self.tool != "system" { self.selected = [] }
-                self.onChange?()
-                if self.tool != "system" { self.load(keepOutput: true) }
+                self.output = text
+                self.finish(text: text, status: status, picked: picked, estimate: estimate, before: before)
             }
         default:
             if tool == "system" {
                 stage = .preview
-                message = L.t("sudoNote")
+                message = nil
                 return
             }
             stage = .previewing
             message = nil
+            failed = false
             generation += 1
             let gen = generation
             run = CLIRun.start(cli: cli, args: [command, "--dry-run"] + selectArgs + params) { [weak self] text, status in
                 guard let self, self.generation == gen else { return }
-                self.output = ToolModel.clean(text)
+                self.output = text
                 self.stage = status == 0 ? .preview : .idle
                 self.failed = status != 0
-                self.message = status == 0 ? L.t("previewNote") + (self.needsSudo ? " " + L.t("sudoNote") : "")
-                    : UninstallModel.summary(text, status: status)
+                self.message = status == 0 ? nil : UninstallModel.summary(ToolItem.humanLines(text), status: status)
             }
         }
     }
 
+    private func finish(text: String, status: Int32, picked: [ToolItem], estimate: Double, before: Int) {
+        let ok = status == 0
+        let logged = Model.historyLines().dropFirst(before).filter { $0.action == ToolModel.historyAction[tool] }
+        let freed = logged.isEmpty ? (ok ? estimate : 0) : logged.reduce(0) { $0 + $1.kb }
+        let n = picked.count
+        let title: String
+        switch tool {
+        case "startup":
+            title = String(format: L.t("disabledN"), n)
+        case "system":
+            if let r = ToolItem.results(text).first(where: { $0.first == "free" }), r.count >= 3,
+               let a = Double(r[1]), let b = Double(r[2]) {
+                title = String(format: L.t("freeFromTo"), L.human(kb: a), L.human(kb: b))
+            } else {
+                title = L.t("done")
+            }
+        default:
+            title = String(format: L.t("freedItems"), L.human(kb: freed), n)
+        }
+        result = ok ? ToolResult(ok: true, title: title, detail: tool == "startup" ? L.t("startupNote") : "")
+            : ToolResult(ok: false, title: UninstallModel.summary(ToolItem.humanLines(text), status: status), raw: ToolItem.humanLines(text))
+        stage = .done
+        failed = false
+        message = nil
+        Hub.finished(tool, ok: ok)
+        onChange?()
+        selected = []
+        load(keepResult: true)
+    }
+
     func cancelPreview() {
         guard stage == .preview || stage == .done else { return }
-        stage = .idle
-        message = nil
-        if tool != "system" { output = "" }
+        resetStage()
     }
 
     func chooseFolder() {
@@ -220,19 +337,17 @@ final class ToolModel: ObservableObject {
 
     func cancel() {
         guard stage != .working else { return }
-        let wasBusy = listing || stage == .previewing
+        if listing {
+            stopSearch()
+            return
+        }
+        guard stage == .previewing else { return }
         generation += 1
         run?.cancel()
         run = nil
-        listing = false
-        if stage == .previewing {
-            stage = .idle
-            output = ""
-        }
-        if wasBusy {
-            failed = false
-            message = L.t("cancelled")
-        }
+        stage = .idle
+        failed = false
+        message = L.t("cancelled")
     }
 
     func back() -> Bool {
@@ -242,7 +357,7 @@ final class ToolModel: ObservableObject {
         case .preview, .done: cancelPreview()
         case .idle, .loading:
             guard listing else { return false }
-            cancel()
+            stopSearch()
         }
         return true
     }
@@ -251,12 +366,12 @@ final class ToolModel: ObservableObject {
         switch stage {
         case .previewing: return "cancel"
         case .preview, .done: return "back"
-        default: return listing ? "cancel" : "home"
+        default: return "home"
         }
     }
 
     func appear() {
-        if stage == .idle && !listing { load() }
+        if stage == .idle && !listing && items.isEmpty && info.isEmpty { load() }
     }
 
     func stop() {
@@ -271,21 +386,21 @@ struct ToolView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             ToolHeader(title: L.t(model.tool), backTitle: L.t(model.backKey), back: { if !model.back() { home() } }) {
-                if model.listing && !model.items.isEmpty { ProgressView().controlSize(.small) }
+                EmptyView()
             }
             header
             if model.tool == "system" {
-                outputBox(maxHeight: .infinity)
+                SystemInfoView(rows: model.info, loading: model.listing)
             } else {
+                ScanStatus(listing: model.listing, step: model.step.map { L.t("step_" + $0) }, count: model.foundCount,
+                           kb: model.tool == "startup" ? nil : model.foundKB, stop: { model.stopSearch() })
                 list
                 if !model.skipped.isEmpty { SkippedRow(items: model.skipped) }
-                if !model.output.isEmpty || model.stage == .previewing || model.stage == .working {
-                    DetailsBox(text: model.output, loading: model.stage == .previewing || model.stage == .working, height: 150)
-                }
             }
+            stageCard
             if let message = model.message {
                 if model.failed {
-                    ErrorNote(summary: message, detail: model.output)
+                    ErrorNote(summary: message, detail: ToolItem.humanLines(model.output))
                 } else {
                     Text(message).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                 }
@@ -294,6 +409,27 @@ struct ToolView: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var stageCard: some View {
+        switch model.stage {
+        case .preview:
+            SummaryCard(symbol: model.tool == "system" ? "gearshape.2" : "eye",
+                        title: model.tool == "system" ? L.t("systemAction") : String(format: L.t("previewCount"), model.chosen.count, L.human(kb: model.selectedKB)),
+                        subtitle: (model.tool == "system" ? "" : L.t("previewNote")) + (model.needsSudo ? (model.tool == "system" ? "" : " ") + L.t("sudoNote") : ""))
+        case .working:
+            if model.tool == "system" {
+                StepList(steps: [("thin", L.t("stepThin")), ("purge", L.t("stepPurge"))].map { ($0.1, model.steps[$0.0] ?? "waiting") })
+            } else {
+                SummaryCard(symbol: "hourglass", title: String(format: L.t("workingCount"), model.chosen.count, L.human(kb: model.selectedKB)),
+                            subtitle: L.t("keepRunning"), busy: true)
+            }
+        case .done:
+            if let r = model.result { ResultCard(result: r) }
+        default:
+            EmptyView()
+        }
     }
 
     @ViewBuilder
@@ -306,18 +442,20 @@ struct ToolView: View {
         case "duplicates":
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    Image(systemName: "folder").foregroundStyle(Color.accentBlue)
+                    Image(systemName: "folder").foregroundStyle(Theme.accent)
                     Text((model.dir as NSString).abbreviatingWithTildeInPath)
                         .font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
                     Spacer()
                     Button(L.t("choose")) { model.chooseFolder() }.disabled(model.busy)
                 }
                 .padding(8)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .themeField()
                 paramRow(L.t("minSize"), text: $model.minMB)
             }
         case "startup":
             note(L.t("startupNote"))
+        case "system":
+            note(L.t("systemNote"))
         default:
             EmptyView()
         }
@@ -335,7 +473,7 @@ struct ToolView: View {
                 .font(.system(size: 12).monospacedDigit())
                 .frame(width: 70)
                 .padding(6)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .themeField(7)
                 .onSubmit { model.load() }
             Spacer()
             Button(L.t("scan")) { model.load() }.disabled(model.busy)
@@ -348,11 +486,11 @@ struct ToolView: View {
                 if model.listing && model.items.isEmpty {
                     VStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text(L.t("analyzing")).font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text(L.t("searching")).font(.system(size: 12)).foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity).padding(.vertical, 40)
                 } else if model.items.isEmpty {
-                    if model.failed || model.message == L.t("cancelled") {
+                    if model.failed || model.message != nil {
                         Color.clear.frame(height: 80)
                     } else {
                         EmptyNote(text: L.t(["startup": "emptyStartup", "dev": "emptyDev"][model.tool] ?? "nothingFound"))
@@ -371,7 +509,7 @@ struct ToolView: View {
             .padding(6)
         }
         .frame(maxHeight: .infinity)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .themeCard()
     }
 
     private func sectionTitle(_ text: String) -> some View {
@@ -382,7 +520,7 @@ struct ToolView: View {
     private func checkbox(_ on: Bool, enabled: Bool = true) -> some View {
         Image(systemName: on ? "checkmark.square.fill" : "square")
             .font(.system(size: 14))
-            .foregroundStyle(enabled ? (on ? Color.accentBlue : Color.secondary) : Color.secondary.opacity(0.4))
+            .foregroundStyle(enabled ? (on ? Theme.accent : Color.secondary) : Color.secondary.opacity(0.4))
     }
 
     private func finderButton(_ path: String) -> some View {
@@ -390,7 +528,7 @@ struct ToolView: View {
             guard !path.isEmpty else { return }
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
         } label: {
-            Image(systemName: "magnifyingglass.circle").font(.system(size: 13)).foregroundStyle(Color.accentBlue)
+            Image(systemName: "magnifyingglass.circle").font(.system(size: 13)).foregroundStyle(Theme.accent)
         }
         .buttonStyle(.plain)
         .help(L.t("showInFinder"))
@@ -408,11 +546,7 @@ struct ToolView: View {
             Button { model.toggle(item) } label: {
                 HStack(spacing: 8) {
                     checkbox(on)
-                    Image(systemName: ItemStyle.symbol(item))
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.accentBlue)
-                        .frame(width: 22, height: 22)
-                        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    IconTile(symbol: ItemStyle.symbol(item), size: 24, font: 12)
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 6) {
                             Text(item.label).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
@@ -434,7 +568,7 @@ struct ToolView: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
-        .background(on ? Color.accentBlue.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .background(on ? Theme.selection : Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
     @ViewBuilder
@@ -469,11 +603,11 @@ struct ToolView: View {
                         HStack(spacing: 8) {
                             Image(systemName: f.type == "keep" ? "lock.fill" : (on ? "trash" : "doc"))
                                 .font(.system(size: 11))
-                                .foregroundStyle(f.type == "keep" ? Color.green : (on ? Color.red : Color.secondary))
+                                .foregroundStyle(f.type == "keep" ? Theme.good : (on ? Theme.bad : Color.secondary))
                                 .frame(width: 16)
                             Text(f.shortPath).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
                             if f.type == "keep" {
-                                Text(L.t("kept")).font(.system(size: 10, weight: .semibold)).foregroundStyle(Color.green)
+                                Text(L.t("kept")).font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.good)
                             }
                             Spacer(minLength: 6)
                             finderButton(f.path)
@@ -484,7 +618,7 @@ struct ToolView: View {
             }
             .padding(.horizontal, 6)
             .padding(.vertical, 4)
-            .background(on ? Color.accentBlue.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .background(on ? Theme.selection : Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
     }
 
@@ -504,7 +638,7 @@ struct ToolView: View {
                         .toggleStyle(.switch)
                         .controlSize(.mini)
                         .labelsHidden()
-                        .disabled(model.busy)
+                        .disabled(model.stage == .working || model.stage == .previewing)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(item.label).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
                                 .strikethrough(model.selected.contains(item.key))
@@ -512,7 +646,7 @@ struct ToolView: View {
                                 .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                         }
                         Spacer(minLength: 6)
-                        Circle().fill(item.state == "on" ? Color.green : Color.secondary.opacity(0.4)).frame(width: 7, height: 7)
+                        Circle().fill(item.state == "on" ? Theme.good : Color.secondary.opacity(0.4)).frame(width: 7, height: 7)
                         Text(L.t(item.state == "on" ? "loaded" : "notLoaded")).font(.system(size: 10)).foregroundStyle(.secondary)
                         finderButton(item.path)
                     }
@@ -538,27 +672,6 @@ struct ToolView: View {
         }
     }
 
-    private func outputBox(maxHeight: CGFloat) -> some View {
-        ScrollViewReader { proxy in
-            ScrollView([.horizontal, .vertical]) {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(model.output.isEmpty ? L.t(model.listing ? "running" : "noOutput") : model.output)
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .fixedSize(horizontal: true, vertical: true)
-                        .textSelection(.enabled)
-                        .padding(8)
-                    Color.clear.frame(height: 1).id("end")
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-            }
-            .frame(maxHeight: maxHeight)
-            .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .onChange(of: model.output) { _ in
-                if model.tool != "system" { proxy.scrollTo("end", anchor: .bottom) }
-            }
-        }
-    }
-
     private var footer: some View {
         Group {
             if model.stage == .working {
@@ -579,7 +692,7 @@ struct ToolView: View {
 
     @ViewBuilder
     private var buttons: some View {
-        let ready = model.hasSelection && model.cliPath != nil && !(model.tool == "system" && model.output.isEmpty)
+        let ready = model.hasSelection && model.cliPath != nil
         switch model.stage {
         case .done:
             BlueButton(title: L.t("done")) { model.cancelPreview() }.keyboardShortcut(.defaultAction)
@@ -593,10 +706,111 @@ struct ToolView: View {
             SecondaryButton(title: L.t("cancel")) { model.cancel() }
             BlueButton(title: L.t("preview"), busy: true) {}
         default:
-            if model.listing { SecondaryButton(title: L.t("cancel")) { model.cancel() } }
             BlueButton(title: model.tool == "system" ? model.actionLabel + "…" : "\(L.t("preview")) · \(model.actionLabel)",
                        enabled: ready && !model.busy) { model.act() }
                 .keyboardShortcut(.defaultAction)
         }
+    }
+}
+
+struct SystemInfoView: View {
+    let rows: [ToolItem]
+    let loading: Bool
+
+    private func rows(_ type: String) -> [ToolItem] { rows.filter { $0.type == type } }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                if rows.isEmpty && loading {
+                    VStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(L.t("readingSystem")).font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity).padding(.vertical, 40)
+                } else {
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                        if let f = rows("free").first {
+                            let avail = Double(f.path) ?? f.kb
+                            StatCard(symbol: "internaldrive", title: L.t("freeSpace"), value: L.human(kb: f.kb),
+                                     detail: String(format: L.t("purgeableLine"), L.human(kb: Double(f.state) ?? 0), L.human(kb: avail)))
+                        }
+                        if let s = rows("swap").first {
+                            let total = Double(s.path) ?? 0
+                            StatCard(symbol: "arrow.left.arrow.right", title: L.t("swap"), value: L.human(kb: s.kb),
+                                     detail: String(format: L.t("ofTotal"), L.human(kb: total)),
+                                     fraction: total > 0 ? s.kb / total : nil)
+                        }
+                        let snaps = rows("snapshot")
+                        StatCard(symbol: "clock.arrow.circlepath", title: L.t("snapshots"), value: "\(snaps.count)",
+                                 detail: snaps.isEmpty ? L.t("noSnapshots") : snaps.prefix(2).map { SystemInfoView.snapshotName($0.label) }.joined(separator: " · "))
+                        if let c = rows("container").first {
+                            let cap = Double(c.path) ?? 0
+                            StatCard(symbol: "square.stack.3d.up", title: String(format: L.t("container"), c.label), value: L.human(kb: c.kb),
+                                     detail: String(format: L.t("ofTotal"), L.human(kb: cap)) + " · " + String(format: L.t("unallocated"), L.human(kb: Double(c.state) ?? 0)),
+                                     fraction: cap > 0 ? c.kb / cap : nil)
+                        }
+                    }
+                    let vols = rows("volume").sorted { $0.kb > $1.kb }
+                    if !vols.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(L.t("volumes")).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                            let maxKB = vols.map(\.kb).max() ?? 0
+                            ForEach(vols) { v in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack {
+                                        Text(v.label).font(.system(size: 12))
+                                        if v.path != "-" && v.path != v.label {
+                                            Text(v.path).font(.system(size: 10)).foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Text(L.human(kb: v.kb)).font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+                                    }
+                                    SizeBar(fraction: maxKB > 0 ? v.kb / maxKB : 0)
+                                }
+                            }
+                        }
+                        .padding(12)
+                        .themeCard()
+                    }
+                    Text(L.t("swapNote")).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    static func snapshotName(_ s: String) -> String {
+        let parts = s.components(separatedBy: ".")
+        if s.hasPrefix("com.apple.TimeMachine."), parts.count > 3 { return parts[3] }
+        if s.hasPrefix("com.apple.os.update") { return L.t("snapUpdate") }
+        return parts.last ?? s
+    }
+}
+
+struct StatCard: View {
+    let symbol: String
+    let title: String
+    let value: String
+    var detail = ""
+    var fraction: Double?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            IconTile(symbol: symbol, size: 32, font: 14)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                Text(value).font(.system(size: 18, weight: .semibold, design: .rounded)).monospacedDigit().lineLimit(1)
+                if let fraction { SizeBar(fraction: fraction).padding(.vertical, 2) }
+                if !detail.isEmpty {
+                    Text(detail).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .themeCard()
     }
 }

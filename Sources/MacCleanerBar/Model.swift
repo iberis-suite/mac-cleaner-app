@@ -2,12 +2,26 @@ import AppKit
 import Foundation
 import ServiceManagement
 
-struct HistoryEntry: Identifiable {
+struct HistoryEntry: Identifiable, Equatable {
     let id = UUID()
     let date: Date
-    let label: String
-    let kb: Double
     let action: String
+    let kb: Double
+    let note: String
+
+    static let tools: [String: String] = [
+        "m1": "ram", "m2": "trash", "m3": "uninstall", "m4": "large", "m5": "caches", "m6": "downloads",
+        "m7": "startup", "m8": "duplicates", "m9": "auto", "mt": "temp", "md": "dev", "ms": "system",
+        "m14": "maintenance", "m15": "privacy",
+    ]
+
+    var title: String { HistoryEntry.tools[action].map { L.t($0) } ?? action }
+
+    var symbol: String {
+        guard let t = HistoryEntry.tools[action] else { return "sparkles" }
+        if t == "ram" { return "memorychip" }
+        return ["caches", "temp", "trash", "auto"].contains(t) ? ItemStyle.command(t) : Catalog.icon(t)
+    }
 }
 
 struct CleanResult: Equatable {
@@ -28,6 +42,7 @@ enum Phase: Equatable {
 final class CLIRun {
     private let process = Process()
     private var data = Data()
+    private var pending = Data()
     private var demoFinish: ((String, Int32) -> Void)?
 
     static var askpassPath: String? {
@@ -42,6 +57,7 @@ final class CLIRun {
         if askpass, let p = askpassPath { env["SUDO_ASKPASS"] = p }
         env["NO_COLOR"] = "1"
         env["TERM"] = "dumb"
+        env["MAC_CLEANER_MACHINE"] = "1"
         env["MAC_CLEANER_LANG"] = L.fr ? "fr" : "en"
         if env["LANG"] == nil && env["LC_ALL"] == nil && env["LC_CTYPE"] == nil {
             env["LC_CTYPE"] = "en_US.UTF-8"
@@ -51,22 +67,23 @@ final class CLIRun {
 
     @discardableResult
     static func start(cli: String, args: [String], askpass: Bool = false, output: ((String) -> Void)? = nil,
-                      completion: @escaping (String, Int32) -> Void) -> CLIRun {
+                      line: ((String) -> Void)? = nil, completion: @escaping (String, Int32) -> Void) -> CLIRun {
         let run = CLIRun()
         if Demo.enabled {
             run.demoFinish = completion
             let (text, status) = Demo.respond(args)
-            let delay = args.contains("--yes") ? 2.0 : 0.6
-            if let output {
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay / 2) {
+            let lines = text.components(separatedBy: "\n")
+            let step = args.contains("--yes") ? 0.5 : 0.18
+            for (i, l) in lines.enumerated() {
+                DispatchQueue.main.asyncAfter(deadline: .now() + step * Double(i + 1)) {
                     guard run.demoFinish != nil else { return }
-                    output(text.components(separatedBy: "\n").prefix(3).joined(separator: "\n"))
+                    line?(l)
+                    output?(lines.prefix(i + 1).joined(separator: "\n"))
                 }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + step * Double(lines.count + 1)) {
                 guard let finish = run.demoFinish else { return }
                 run.demoFinish = nil
-                output?(text)
                 finish(text, status)
             }
             return run
@@ -84,6 +101,7 @@ final class CLIRun {
             guard !chunk.isEmpty else { return }
             DispatchQueue.main.async {
                 run.data.append(chunk)
+                run.feed(chunk, line: line)
                 output?(Model.stripANSI(String(decoding: run.data, as: UTF8.self)))
             }
         }
@@ -92,7 +110,11 @@ final class CLIRun {
             pipe.fileHandleForReading.readabilityHandler = nil
             let status = proc.terminationStatus
             DispatchQueue.main.async {
-                if !rest.isEmpty { run.data.append(rest) }
+                if !rest.isEmpty {
+                    run.data.append(rest)
+                    run.feed(rest, line: line)
+                }
+                run.flush(line: line)
                 let text = Model.stripANSI(String(decoding: run.data, as: UTF8.self))
                 output?(text)
                 completion(text, status)
@@ -104,6 +126,22 @@ final class CLIRun {
             DispatchQueue.main.async { completion(error.localizedDescription, 1) }
         }
         return run
+    }
+
+    private func feed(_ chunk: Data, line: ((String) -> Void)?) {
+        guard let line else { return }
+        pending.append(chunk)
+        while let nl = pending.firstIndex(of: 0x0A) {
+            let bytes = pending[pending.startIndex..<nl]
+            pending.removeSubrange(pending.startIndex...nl)
+            line(Model.stripANSI(String(decoding: bytes, as: UTF8.self)))
+        }
+    }
+
+    private func flush(line: ((String) -> Void)?) {
+        guard let line, !pending.isEmpty else { return }
+        line(Model.stripANSI(String(decoding: pending, as: UTF8.self)))
+        pending.removeAll()
     }
 
     func cancel() {
@@ -133,8 +171,6 @@ final class Model: ObservableObject {
     @Published var sheetSelected: Set<Int> = []
     @Published var sheetError: String?
     @Published var result: CleanResult?
-    @Published var detailsLoading = false
-    private var detailsKey: String?
     @Published var launchAtLogin = false
     @Published var estimates: [String: Double] = [:]
     @Published var estimating: Set<String> = []
@@ -145,6 +181,9 @@ final class Model: ObservableObject {
     @Published var alertsEnabled: Bool
     @Published var weeklyEnabled = false
     @Published var fullDiskAccess = true
+    @Published var accessRequested = UserDefaults.standard.bool(forKey: "fdaRequested")
+    @Published var history: [HistoryEntry] = []
+    @Published var freedTotal: Double = 0
     @Published var battery: BatteryInfo?
     @Published var topCPU: [AppUsage] = []
     @Published var topMemory: [AppUsage] = []
@@ -162,7 +201,6 @@ final class Model: ObservableObject {
     private var activityTimer: Timer?
     private let sampler = ProcSampler()
     private var current: CLIRun?
-    private var detailsRun: CLIRun?
     private var runToken = 0
     private var previewGeneration = 0
     private var panelObserver: NSObjectProtocol?
@@ -171,6 +209,7 @@ final class Model: ObservableObject {
     private var trashDebounce: DispatchWorkItem?
     private var trashPending = false
     private var thermalObserver: NSObjectProtocol?
+    private var activeObserver: NSObjectProtocol?
 
     init() {
         let d = UserDefaults.standard
@@ -192,6 +231,11 @@ final class Model: ObservableObject {
             forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.thermalState = ProcessInfo.processInfo.thermalState }
+        }
+        activeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.checkAccess() }
         }
         refresh()
         measureTrash()
@@ -243,7 +287,7 @@ final class Model: ObservableObject {
     }
 
     nonisolated static func nsColor(level: Int) -> NSColor {
-        [NSColor.systemGreen, .systemOrange, .systemRed][max(0, min(2, level))]
+        Theme.levelNS[max(0, min(2, level))]
     }
 
     var freeLabel: String {
@@ -277,7 +321,7 @@ final class Model: ObservableObject {
         readHistory()
         launchAtLogin = SMAppService.mainApp.status == .enabled
         weeklyEnabled = WeeklyJob.isInstalled
-        fullDiskAccess = DiskAccess.hasFullAccess()
+        checkAccess()
         watchTrash()
         thermalState = ProcessInfo.processInfo.thermalState
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -297,6 +341,7 @@ final class Model: ObservableObject {
         measureTrash()
         if !Demo.enabled { battery = Battery.read() }
         startActivity()
+        NetworkMonitor.shared.retain("panel")
     }
 
     var panelVisible: Bool { panelWindow?.isVisible == true }
@@ -383,10 +428,50 @@ final class Model: ObservableObject {
     }
 
     func openFullDiskAccess() {
+        accessRequested = true
+        UserDefaults.standard.set(true, forKey: "fdaRequested")
         NSWorkspace.shared.open(DiskAccess.settingsURL)
     }
 
+    func checkAccess() {
+        guard !Demo.enabled else { return }
+        fullDiskAccess = DiskAccess.hasFullAccess()
+        if fullDiskAccess && accessRequested {
+            accessRequested = false
+            UserDefaults.standard.set(false, forKey: "fdaRequested")
+        }
+    }
+
+    func relaunch() {
+        guard !Demo.enabled else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        p.arguments = ["-n", Bundle.main.bundlePath]
+        guard (try? p.run()) != nil else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { NSApp.terminate(nil) }
+    }
+
+    var weeklyNext: Date? {
+        guard weeklyEnabled else { return nil }
+        var c = DateComponents()
+        c.weekday = 2
+        c.hour = 10
+        c.minute = 0
+        return Calendar.current.nextDate(after: Date(), matching: c, matchingPolicy: .nextTime)
+    }
+
+    var weeklyLast: Date? {
+        guard !Demo.enabled else { return weeklyEnabled ? Calendar.current.date(byAdding: .day, value: -3, to: Date()) : nil }
+        return (try? FileManager.default.attributesOfItem(atPath: WeeklyJob.logPath))?[.modificationDate] as? Date
+    }
+
+    func openPanelPreview(_ command: String) {
+        preview(command)
+        StatusItemOpener.open(panel: panelWindow)
+    }
+
     func refreshEstimates(force: Bool) {
+        guard !Snapshots.active else { return }
         if force { measureTrash() }
         guard let cli = cliPath, estimating.isDisjoint(with: Model.estimated) else { return }
         if !force, let last = lastEstimate, Date().timeIntervalSince(last) < 600 { return }
@@ -497,7 +582,11 @@ final class Model: ObservableObject {
     }
 
     var sheetSelectedKB: Double {
-        guard case .previewReady(let c) = phase else { return 0 }
+        let c: String
+        switch phase {
+        case .previewReady(let x), .previewing(let x): c = x
+        default: return 0
+        }
         if !Model.selectable.contains(c) { return sheetItems.filter { $0.index > 0 }.reduce(0) { $0 + $1.kb } }
         return sheetItems.filter { $0.index > 0 && sheetSelected.contains($0.index) }.reduce(0) { $0 + $1.kb }
     }
@@ -508,13 +597,20 @@ final class Model: ObservableObject {
         return sheetItems.contains { $0.index > 0 }
     }
 
+    var sheetEditable: Bool {
+        switch phase {
+        case .previewing, .previewReady: return true
+        default: return false
+        }
+    }
+
     func toggleSheet(_ index: Int) {
-        guard case .previewReady = phase, index > 0 else { return }
+        guard sheetEditable, index > 0 else { return }
         if sheetSelected.contains(index) { sheetSelected.remove(index) } else { sheetSelected.insert(index) }
     }
 
     func setSheet(_ indexes: [Int], on: Bool) {
-        guard case .previewReady = phase else { return }
+        guard sheetEditable else { return }
         if on { sheetSelected.formUnion(indexes) } else { sheetSelected.subtract(indexes) }
     }
 
@@ -565,22 +661,23 @@ final class Model: ObservableObject {
     }
 
     private func readHistory() {
-        guard let text = try? String(contentsOfFile: Model.historyPath, encoding: .utf8) else {
-            freedMonth = 0
-            return
-        }
+        let entries = Model.historyEntries()
+        let now = Date()
+        freedMonth = entries.filter { Calendar.current.isDate($0.date, equalTo: now, toGranularity: .month) }.reduce(0) { $0 + $1.kb }
+        freedTotal = entries.reduce(0) { $0 + $1.kb }
+        history = Array(entries.suffix(8).reversed())
+    }
+
+    nonisolated static func historyEntries() -> [HistoryEntry] {
+        guard let text = try? String(contentsOfFile: historyPath, encoding: .utf8) else { return [] }
         let fmt = DateFormatter()
         fmt.locale = Locale(identifier: "en_US_POSIX")
         fmt.dateFormat = "yyyy-MM-dd HH:mm"
-        let cal = Calendar.current
-        let now = Date()
-        var sum = 0.0
-        for line in text.split(separator: "\n") {
+        return text.split(separator: "\n").compactMap { line in
             let cols = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-            guard cols.count >= 3, let date = fmt.date(from: cols[0]) else { continue }
-            if cal.isDate(date, equalTo: now, toGranularity: .month) { sum += Double(cols[2]) ?? 0 }
+            guard cols.count >= 3, let date = fmt.date(from: cols[0]) else { return nil }
+            return HistoryEntry(date: date, action: cols[1], kb: Double(cols[2]) ?? 0, note: cols.count > 3 ? cols[3] : "")
         }
-        freedMonth = sum
     }
 
     static func findCLI() -> String? {
@@ -604,47 +701,42 @@ final class Model: ObservableObject {
         sheetSelected = []
         sheetError = nil
         result = nil
-        detailsKey = nil
         previewGeneration += 1
         let gen = previewGeneration
         phase = .previewing(command)
-        run([command, "--list"], live: false) { [weak self] in
+        run([command, "--list"], live: false, line: { [weak self] l in
+            guard let self, self.previewGeneration == gen, let item = ToolItem.parse(l) else { return }
+            self.sheetItems.append(item)
+            if item.index > 0 && item.state != "excluded" && item.kb > 0 { self.sheetSelected.insert(item.index) }
+        }) { [weak self] in
             guard let self, self.previewGeneration == gen else { return }
-            if self.exitStatus == 0 {
-                self.sheetItems = ToolItem.parseList(self.output)
-                self.sheetSelected = Set(Model.defaultSelection(self.sheetItems).filter { $0.kb > 0 }.map(\.index))
-                self.estimates[command] = Model.defaultSelection(self.sheetItems).reduce(0) { $0 + $1.kb }
-                self.estimatedAt[command] = Date()
-            } else {
-                self.sheetError = UninstallModel.lastMeaningfulLine(self.output)
-            }
-            self.output = ""
-            self.phase = .previewReady(command)
+            self.finishPreview(command, failed: self.exitStatus != 0)
         }
     }
 
-    func loadDetails() {
-        guard case .previewReady(let command) = phase, let cli = cliPath, !detailsLoading else { return }
-        let args = [command, "--dry-run"] + selectArgs(command)
-        let key = args.joined(separator: "\u{1F}")
-        guard detailsKey != key else { return }
-        detailsKey = key
-        detailsLoading = true
-        output = ""
-        detailsRun = CLIRun.start(cli: cli, args: args, output: { [weak self] text in
-            guard let self, self.detailsKey == key, self.detailsLoading else { return }
-            self.output = text
-        }, completion: { [weak self] text, _ in
-            guard let self, self.detailsKey == key, self.detailsLoading else { return }
-            self.output = text
-            self.detailsLoading = false
-            self.detailsRun = nil
-        })
+    private func finishPreview(_ command: String, failed: Bool) {
+        if failed {
+            sheetError = UninstallModel.lastMeaningfulLine(ToolItem.humanLines(output))
+        } else {
+            estimates[command] = Model.defaultSelection(sheetItems).reduce(0) { $0 + $1.kb }
+            estimatedAt[command] = Date()
+        }
+        phase = .previewReady(command)
+    }
+
+    func stopPreview() {
+        guard case .previewing(let command) = phase else { return }
+        previewGeneration += 1
+        runToken += 1
+        let run = current
+        current = nil
+        run?.cancel()
+        exitStatus = 0
+        phase = .previewReady(command)
     }
 
     func clean() {
         guard case .previewReady(let command) = phase, canClean else { return }
-        cancelDetails()
         let args = [command, "--yes"] + selectArgs(command)
         let chosen = Model.selectable.contains(command)
             ? sheetItems.filter { $0.index > 0 && sheetSelected.contains($0.index) }
@@ -669,7 +761,7 @@ final class Model: ObservableObject {
             let logged = Model.historyLines().dropFirst(before).filter { $0.action == Model.historyAction[command] }
             let freed = logged.isEmpty ? (ok ? estimate : 0) : logged.reduce(0) { $0 + $1.kb }
             self.result = CleanResult(ok: ok, freedKB: freed, sections: sections,
-                                      message: ok ? "" : UninstallModel.lastMeaningfulLine(self.output))
+                                      message: ok ? "" : UninstallModel.lastMeaningfulLine(ToolItem.humanLines(self.output)))
             self.phase = .cleaned(command)
             self.refresh()
             self.refreshEstimates(force: true)
@@ -698,15 +790,6 @@ final class Model: ObservableObject {
         }
     }
 
-    func cancelDetails() {
-        guard detailsLoading else { return }
-        let run = detailsRun
-        detailsRun = nil
-        detailsLoading = false
-        detailsKey = nil
-        run?.cancel()
-    }
-
     func attachPanel(_ window: NSWindow?) {
         guard let window, window !== panelWindow else { return }
         panelWindow = window
@@ -720,13 +803,11 @@ final class Model: ObservableObject {
 
     func panelClosed() {
         if case .previewing = phase { back() }
-        cancelDetails()
+        NetworkMonitor.shared.release("panel")
     }
 
     func dismiss() {
         guard !busy else { return }
-        cancelDetails()
-        detailsKey = nil
         phase = .idle
         output = ""
         sheetItems = []
@@ -735,7 +816,7 @@ final class Model: ObservableObject {
         result = nil
     }
 
-    private func run(_ args: [String], live: Bool, completion: @escaping () -> Void) {
+    private func run(_ args: [String], live: Bool, line: ((String) -> Void)? = nil, completion: @escaping () -> Void) {
         output = ""
         exitStatus = 0
         guard let cli = cliPath else {
@@ -749,7 +830,7 @@ final class Model: ObservableObject {
         current = CLIRun.start(cli: cli, args: args, output: live ? { [weak self] text in
             guard let self, self.runToken == token else { return }
             self.output = text
-        } : nil, completion: { [weak self] text, status in
+        } : nil, line: line, completion: { [weak self] text, status in
             guard let self, self.runToken == token else { return }
             self.output = text
             self.exitStatus = status

@@ -10,7 +10,13 @@ struct AppItem: Identifiable, Hashable {
 struct Leftover: Identifiable {
     let id = UUID()
     let path: String
-    let size: String
+    let kb: Double
+    var type = "file"
+
+    var shortPath: String {
+        let home = NSHomeDirectory()
+        return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+    }
 }
 
 @MainActor
@@ -20,13 +26,14 @@ final class UninstallModel: ObservableObject {
     @Published var query = ""
     @Published var selected: AppItem?
     @Published var leftovers: [Leftover] = []
-    @Published var total: String?
+    @Published var total: Double?
     @Published var loading = false
     @Published var working = false
     @Published var message: String?
     @Published var failed = false
     @Published var confirming = false
     @Published var lastOutput = ""
+    @Published var result: ToolResult?
 
     let cliPath: String?
     private var run: CLIRun?
@@ -105,6 +112,7 @@ final class UninstallModel: ObservableObject {
     func select(_ app: AppItem) {
         guard !working, selected != app else { return }
         run?.cancel()
+        result = nil
         selected = app
         leftovers = []
         total = nil
@@ -115,36 +123,20 @@ final class UninstallModel: ObservableObject {
             return
         }
         loading = true
-        run = CLIRun.start(cli: cli, args: ["uninstall", app.path, "--dry-run"]) { [weak self] text, status in
+        run = CLIRun.start(cli: cli, args: ["uninstall", app.path, "--list"], line: { [weak self] l in
+            guard let self, self.selected == app, self.loading, let item = ToolItem.parse(l), item.index > 0 else { return }
+            self.leftovers.append(Leftover(path: item.path, kb: item.kb, type: item.type))
+        }) { [weak self] text, status in
             guard let self, self.selected == app, self.loading else { return }
             self.loading = false
             self.failed = status != 0
             self.lastOutput = text
-            self.parse(text)
-            if status != 0 { self.message = UninstallModel.summary(text, status: status) }
-        }
-    }
-
-    private func parse(_ text: String) {
-        let unit = "(?:Go|GB|Mo|MB|Ko|KB)"
-        guard let row = try? NSRegularExpression(pattern: "^\\s*\\S+\\s+([0-9]+(?:[.,][0-9]+)?\\s" + unit + ")\\s+(\\S.*)$"),
-              let tot = try? NSRegularExpression(pattern: "Total\\s*:\\s*([0-9]+(?:[.,][0-9]+)?\\s" + unit + ")") else { return }
-        var items: [Leftover] = []
-        for line in text.components(separatedBy: "\n") {
-            let ns = line as NSString
-            let range = NSRange(location: 0, length: ns.length)
-            if let m = tot.firstMatch(in: line, range: range) {
-                let t = ns.substring(with: m.range(at: 1))
-                total = L.fr ? t.replacingOccurrences(of: ".", with: ",") : t
-            } else if let m = row.firstMatch(in: line, range: range) {
-                let path = ns.substring(with: m.range(at: 2))
-                if path.hasPrefix("/") || path.hasPrefix("~") {
-                    let size = ns.substring(with: m.range(at: 1))
-                    items.append(Leftover(path: path, size: L.fr ? size.replacingOccurrences(of: ".", with: ",") : size))
-                }
+            if status == 0 {
+                self.total = self.leftovers.reduce(0) { $0 + $1.kb }
+            } else {
+                self.message = UninstallModel.summary(ToolItem.humanLines(text), status: status)
             }
         }
-        leftovers = items
     }
 
     nonisolated static func lastMeaningfulLine(_ text: String) -> String {
@@ -169,13 +161,19 @@ final class UninstallModel: ObservableObject {
         guard let app = selected, let cli = cliPath, !working, !loading, !failed else { return }
         working = true
         message = nil
+        result = nil
+        let size = total ?? 0
         run = CLIRun.start(cli: cli, args: ["uninstall", app.path, "--yes"]) { [weak self] text, status in
             guard let self else { return }
             self.working = false
             self.failed = status != 0
             self.lastOutput = text
-            self.message = status == 0 ? String(format: L.t("uninstalled"), app.name)
-                : UninstallModel.summary(text, status: status)
+            if status == 0 {
+                self.result = ToolResult(ok: true, title: String(format: L.t("uninstalled"), app.name),
+                                         detail: String(format: L.t("uninstalledSize"), L.human(kb: size)))
+            } else {
+                self.message = UninstallModel.summary(ToolItem.humanLines(text), status: status)
+            }
             Hub.finished("uninstall", ok: status == 0)
             if status == 0 {
                 self.clearSelection()
@@ -226,9 +224,10 @@ struct UninstallView: View {
                 TextField(L.t("search"), text: $model.query).textFieldStyle(.plain)
             }
             .padding(8)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .themeField()
             appList
             details
+            if let r = model.result { ResultCard(result: r) }
             if let message = model.message {
                 if model.failed {
                     ErrorNote(summary: message, detail: model.lastOutput)
@@ -258,7 +257,7 @@ struct UninstallView: View {
             Button(L.t("toTrash"), role: .destructive) { model.trash() }
             Button(L.t("cancel"), role: .cancel) {}
         } message: {
-            Text(String(format: L.t("uninstallInfo"), model.total ?? "—"))
+            Text(String(format: L.t("uninstallInfo"), model.total.map { L.human(kb: $0) } ?? "—"))
         }
     }
 
@@ -276,14 +275,7 @@ struct UninstallView: View {
             .padding(4)
         }
         .frame(maxHeight: .infinity)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-
-    static func symbol(_ path: String) -> String {
-        if path.hasSuffix(".app") { return "app.dashed" }
-        var dir: ObjCBool = false
-        let full = (path as NSString).expandingTildeInPath
-        return FileManager.default.fileExists(atPath: full, isDirectory: &dir) && dir.boolValue ? "folder" : "doc"
+        .themeCard()
     }
 
     private func row(_ app: AppItem) -> some View {
@@ -300,8 +292,8 @@ struct UninstallView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .foregroundStyle(isSelected ? Color.white : Color.primary)
-        .background(isSelected ? Color.accentBlue : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .foregroundStyle(isSelected ? Theme.onAccent : Color.primary)
+        .background(isSelected ? AnyShapeStyle(Theme.button) : AnyShapeStyle(Color.clear), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .contentShape(Rectangle())
     }
 
@@ -311,36 +303,45 @@ struct UninstallView: View {
             if model.selected == nil {
                 Text(L.t("selectApp")).font(.callout).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 60)
-            } else if model.loading {
+            } else if model.loading && model.leftovers.isEmpty {
                 HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }.frame(minHeight: 60)
             } else {
-                Text(L.t("leftovers")).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(L.t("leftovers")).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                    if model.loading { ProgressView().controlSize(.mini) }
+                    Spacer()
+                    Text(String(format: L.t("foundN"), model.leftovers.count)).font(.system(size: 11)).foregroundStyle(.secondary)
+                }
                 ScrollView {
                     VStack(spacing: 4) {
                         ForEach(model.leftovers) { item in
                             HStack(spacing: 8) {
-                                Image(systemName: UninstallView.symbol(item.path))
-                                    .foregroundStyle(Color.accentBlue)
+                                Image(systemName: item.type == "app" ? "app.dashed" : (item.type == "dir" ? "folder" : "doc"))
+                                    .foregroundStyle(Theme.accent)
                                     .frame(width: 16)
-                                Text(item.path).font(.system(size: 11)).lineLimit(1).truncationMode(.middle)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text((item.path as NSString).lastPathComponent).font(.system(size: 11.5)).lineLimit(1).truncationMode(.middle)
+                                    Text(item.shortPath).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                                }
                                 Spacer()
-                                Text(item.size).font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
+                                Text(L.human(kb: item.kb)).font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary)
                             }
+                            .help(item.path)
                         }
                     }
                 }
-                .frame(maxHeight: 120)
+                .frame(maxHeight: 130)
                 if let total = model.total {
-                    Divider()
+                    Divider().overlay(Theme.divider)
                     HStack {
                         Text(L.t("total")).font(.system(size: 13, weight: .semibold))
                         Spacer()
-                        Text(total).font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                        Text(L.human(kb: total)).font(.system(size: 13, weight: .semibold)).monospacedDigit()
                     }
                 }
             }
         }
         .padding(10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .themeCard()
     }
 }

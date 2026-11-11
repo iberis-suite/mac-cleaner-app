@@ -53,7 +53,7 @@ enum Demo {
                  row(3, 210 * mb, "Factures 2024", h("Downloads/Factures 2024"), "dir"),
                  row(4, 48 * mb, "notice.pdf", h("Downloads/notice.pdf"), "file")]
         case "duplicates":
-            r = [row(1, 320 * mb, "video.mp4", h("Documents/video.mp4"), "keep"),
+            r = ["STEP\tsize", "STEP\thash", row(1, 320 * mb, "video.mp4", h("Documents/video.mp4"), "keep"),
                  row(1, 320 * mb, "video copie.mp4", h("Desktop/video copie.mp4"), "copy"),
                  row(2, 24 * mb, "rapport.pdf", h("Documents/rapport.pdf"), "keep"),
                  row(2, 24 * mb, "rapport (1).pdf", h("Downloads/rapport (1).pdf"), "copy"),
@@ -70,13 +70,29 @@ enum Demo {
         case "cachesAdv":
             return list("caches")
         case "maintenance":
-            r = [row(1, 0, "Vider le cache DNS", "dscacheutil -flushcache; killall -HUP mDNSResponder", "dns", "root"),
-                 row(2, 0, "Réindexer Spotlight", "mdutil -E /", "spotlight", "root"),
-                 row(3, 0, "Reconstruire « Ouvrir avec »", "lsregister -kill -r", "launchservices", "user"),
-                 row(0, 0, "Scripts périodiques", "periodic daily weekly monthly", "periodic", "root")]
+            r = [row(1, 0, L.fr ? "Vider le cache DNS" : "Flush the DNS cache", "dscacheutil -flushcache", "dns", "root"),
+                 row(2, 0, L.fr ? "Réindexer Spotlight" : "Reindex Spotlight", "mdutil -E /", "spotlight", "root"),
+                 row(3, 0, L.fr ? "Reconstruire la base « Ouvrir avec »" : "Rebuild the \u{201C}Open With\u{201D} database", "lsregister -kill -r", "launch", "user"),
+                 row(4, 0, L.fr ? "Scripts périodiques (daily, weekly, monthly)" : "Periodic scripts (daily, weekly, monthly)", "periodic daily weekly monthly", "periodic", "root")]
         case "privacy":
-            r = [row(1, 410 * mb, "Safari · Historique", h("Library/Safari/History.db"), "history", "safari"),
-                 row(2, 220 * mb, "Chrome · Cache", h("Library/Caches/Google/Chrome"), "cache", "chrome")]
+            let hist = L.fr ? "Historique" : "History"
+            r = [row(1, 410 * mb, "Safari · \(hist)", h("Library/Safari/History.db"), "history", "safari"),
+                 row(2, 2 * mb, "Safari · Cookies", h("Library/Cookies/Cookies.binarycookies"), "cookies", "safari"),
+                 row(3, 640 * mb, "Safari · Cache", h("Library/Caches/com.apple.Safari"), "cache", "safari"),
+                 row(4, 96 * mb, "Chrome · Default · \(hist)", h("Library/Application Support/Google/Chrome/Default/History"), "history", "chrome"),
+                 row(5, 4 * mb, "Chrome · Default · Cookies", h("Library/Application Support/Google/Chrome/Default/Network/Cookies"), "cookies", "chrome"),
+                 row(6, 1.1 * gb, "Chrome · Default · Cache", h("Library/Caches/Google/Chrome/Default"), "cache", "chrome"),
+                 row(0, 0, "Firefox", h("Library/Application Support/Firefox/Profiles"), "running", "firefox")]
+        case "system":
+            r = [row(0, 2.5 * gb, "swap", "\(Int(3 * gb))", "swap"),
+                 row(0, 0, "com.apple.TimeMachine.2026-11-10-091502.local", "-", "snapshot"),
+                 row(0, 0, "com.apple.TimeMachine.2026-11-11-091744.local", "-", "snapshot"),
+                 row(0, 390 * gb, "Data", "Data", "volume"),
+                 row(0, 13 * gb, "Macintosh HD", "System", "volume"),
+                 row(0, 18 * gb, "Preboot", "Preboot", "volume"),
+                 row(0, 3 * gb, "VM", "VM", "volume"),
+                 row(0, 428 * gb, "disk3", "\(Int(460 * gb))", "container", "\(Int(32 * gb))"),
+                 row(0, 119 * gb, "free", "\(Int(126 * gb))", "free", "\(Int(7 * gb))")]
         default:
             r = []
         }
@@ -84,39 +100,36 @@ enum Demo {
     }
 
     static func dryRun(_ cmd: String) -> String {
-        switch cmd {
-        case "system":
-            return L.fr
-                ? "Système — aperçu\n  Snapshots Time Machine locaux     2   6,2 Go\n  Binaires universels (amincir)   14   1,1 Go\n  Total estimé : 7,3 Go\n  Rien n'a été fait."
-                : "System — preview\n  Local Time Machine snapshots      2   6.2 GB\n  Universal binaries (thin)        14   1.1 GB\n  Estimated total: 7.3 GB\n  Nothing was done."
-        case "privacy":
-            return L.fr
-                ? "Confidentialité — aperçu\n  Safari   Historique   410 Mo\n  Chrome   Cache        220 Mo\n  Firefox  ouvert, ignoré\n  Total : 630 Mo"
-                : "Privacy — preview\n  Safari   History   410 MB\n  Chrome   Cache     220 MB\n  Firefox  open, skipped\n  Total: 630 MB"
-        case "maintenance":
-            return L.fr
-                ? "Entretien — aperçu\n  sudo dscacheutil -flushcache\n  sudo mdutil -E /\n  lsregister -kill -r -domain local -domain user"
-                : "Maintenance — preview\n  sudo dscacheutil -flushcache\n  sudo mdutil -E /\n  lsregister -kill -r -domain local -domain user"
-        default:
-            let items = ToolItem.parseList(list(cmd)).filter { $0.index > 0 }
-            let lines = items.map { "  ✓ \(L.human(kb: $0.kb).padding(toLength: 9, withPad: " ", startingAt: 0)) \($0.shortPath)" }
-            let total = L.human(kb: items.reduce(0) { $0 + $1.kb })
-            return ([L.fr ? "Aperçu — rien n'est supprimé" : "Preview — nothing is deleted"] + lines
-                + [L.fr ? "Total : \(total)" : "Total: \(total)"]).joined(separator: "\n")
-        }
+        let items = ToolItem.parseList(list(cmd)).filter { $0.index > 0 }
+        return items.map { "  [\(L.fr ? "aperçu" : "dry run")] \($0.shortPath)" }.joined(separator: "\n")
     }
 
-    static func yes(_ cmd: String) -> String {
-        dryRun(cmd).replacingOccurrences(of: L.fr ? "Aperçu — rien n'est supprimé" : "Preview — nothing is deleted",
-                                         with: L.fr ? "Fait (mode démo, rien n'a été touché)" : "Done (demo mode, nothing was touched)")
+    static func yes(_ cmd: String, _ args: [String]) -> String {
+        let picked = (args.firstIndex(of: "--select").map { args[$0 + 1] } ?? "1 2 3 4").split(separator: " ").compactMap { Int($0) }
+        switch cmd {
+        case "maintenance":
+            let keys = ["dns", "spotlight", "launch", "periodic"]
+            return picked.filter { $0 >= 1 && $0 <= 4 }.flatMap { ["STEP\t\(keys[$0 - 1])\trunning", "STEP\t\(keys[$0 - 1])\tdone"] }
+                .joined(separator: "\n")
+        case "privacy":
+            let items = ToolItem.parseList(list("privacy")).filter { picked.contains($0.index) }
+            return (picked.flatMap { ["STEP\t\($0)\trunning", "STEP\t\($0)\tdone"] }
+                + ["RESULT\t\(Int(items.reduce(0) { $0 + $1.kb }))\t\(items.count)"]).joined(separator: "\n")
+        case "system":
+            return ["STEP\tthin\trunning", "STEP\tthin\tdone", "STEP\tpurge\trunning", "STEP\tpurge\tdone",
+                    "RESULT\tfree\t\(Int(119 * 1_048_576.0))\t\(Int(126.4 * 1_048_576.0))"].joined(separator: "\n")
+        default:
+            return L.fr ? "Fait (mode démo, rien n'a été touché)" : "Done (demo mode, nothing was touched)"
+        }
     }
 
     static func uninstall(_ path: String) -> String {
         let name = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         let id = "com.example." + name.lowercased()
-        let rows = [("app", "412.0 MB", path), ("support", "96.4 MB", "~/Library/Application Support/\(name)"),
-                    ("cache", "38.1 MB", "~/Library/Caches/\(id)"), ("prefs", "12.0 KB", "~/Library/Preferences/\(id).plist")]
-        return rows.map { "  \($0.0)  \($0.1)  \($0.2)" }.joined(separator: "\n") + "\nTotal : 546.5 MB"
+        return [row(1, 412 * 1024, "\(name).app", path, "app"),
+                row(2, 96 * 1024, name, h("Library/Application Support/\(name)"), "dir"),
+                row(3, 38 * 1024, id, h("Library/Caches/\(id)"), "dir"),
+                row(4, 12, "\(id).plist", h("Library/Preferences/\(id).plist"), "file")].joined(separator: "\n")
     }
 
     static func respond(_ args: [String]) -> (String, Int32) {
@@ -125,8 +138,19 @@ enum Demo {
             return args.contains("--yes") ? ("OK", 0) : (uninstall(args[1]), 0)
         }
         if args.contains("--list") { return (list(cmd), 0) }
-        if args.contains("--yes") { return (yes(cmd), 0) }
+        if args.contains("--yes") { return (yes(cmd, args), 0) }
         return (dryRun(cmd), 0)
+    }
+
+    static func history() -> [HistoryEntry] {
+        let now = Date()
+        func ago(_ h: Double) -> Date { now.addingTimeInterval(-h * 3600) }
+        return [HistoryEntry(date: ago(2), action: "m9", kb: 3.4 * 1_048_576, note: ""),
+                HistoryEntry(date: ago(26), action: "m4", kb: 8.4 * 1_048_576, note: ""),
+                HistoryEntry(date: ago(50), action: "m1", kb: 0, note: "31% → 58%"),
+                HistoryEntry(date: ago(74), action: "m5", kb: 2.1 * 1_048_576, note: ""),
+                HistoryEntry(date: ago(122), action: "m3", kb: 546 * 1024, note: "Figma"),
+                HistoryEntry(date: ago(170), action: "m14", kb: 0, note: "dns, launch")]
     }
 
     @MainActor
@@ -139,6 +163,9 @@ enum Demo {
         m.battery = BatteryInfo(cycles: 212, health: 91, charge: 76, onAC: false, charging: false)
         m.fullDiskAccess = true
         m.freedMonth = 6.8 * 1_048_576
+        m.freedTotal = 41.3 * 1_048_576
+        m.history = Demo.history()
+        m.weeklyEnabled = true
         m.thermalState = .nominal
     }
 
@@ -199,6 +226,7 @@ enum Snapshots {
 
     static func run(into dir: String) {
         active = true
+        NetworkMonitor.shared.retain("snapshots")
         let url = URL(fileURLWithPath: dir)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         for (dark, suffix) in [(true, "sombre"), (false, "clair")] {
@@ -250,20 +278,30 @@ enum Snapshots {
             let m = Model()
             m.estimates = ["temp": 664 * 1024, "caches": 4.8 * 1_048_576, "trash": 830 * 1024]
             setup(m)
-            return AnyView(PanelView(model: m) { _ in }.background(Color(nsColor: .windowBackgroundColor)))
+            return AnyView(PanelView(model: m) { _ in })
         }
     }
 
     private static func window(_ name: String, _ setup: @escaping (Hub) -> Void) -> Shot {
         Shot(name: name, window: true) {
+            let m = Model()
+            m.estimates = ["temp": 664 * 1024, "caches": 4.8 * 1_048_576, "trash": 830 * 1024]
             let hub = Hub()
             hub.cliPath = "demo"
             setup(hub)
-            return AnyView(MainView(hub: hub))
+            return AnyView(MainView(hub: hub, model: m))
         }
     }
 
     private static func items(_ cmd: String) -> [ToolItem] { ToolItem.parseList(Demo.list(cmd)) }
+
+    private static func fill(_ m: ToolModel, _ all: [ToolItem], partial: Bool = false) {
+        let rows = all.filter { $0.index > 0 }
+        let keep = partial ? Array(rows.prefix(max(1, rows.count / 2))) : rows
+        m.items = m.sortsBySize ? keep.sorted { $0.kb > $1.kb } : keep
+        m.skipped = partial ? [] : all.filter { $0.index == 0 }
+        m.selected = Set(m.items.filter { $0.type != "keep" && $0.state != "excluded" }.prefix(m.tool == "startup" ? 1 : 3).map(\.key))
+    }
 
     private static func shots() -> [Shot] {
         var s: [Shot] = []
@@ -279,81 +317,116 @@ enum Snapshots {
             m.thermalState = .serious
         })
         s.append(panel("panneau-sans-acces-disque") { m in m.fullDiskAccess = false })
+        s.append(panel("panneau-acces-relancer") { m in
+            m.fullDiskAccess = false
+            m.accessRequested = true
+        })
         for c in ["temp", "caches", "trash", "auto"] {
             let all = items(c)
             s.append(panel("apercu-\(c)-chargement") { m in m.phase = .previewing(c) })
+            s.append(panel("apercu-\(c)-en-recherche") { m in
+                let part = Array(all.filter { $0.index > 0 }.prefix(2))
+                m.sheetItems = part
+                m.sheetSelected = Set(Model.defaultSelection(part).map(\.index))
+                m.phase = .previewing(c)
+            })
             s.append(panel("apercu-\(c)-liste") { m in
                 m.sheetItems = all
                 m.sheetSelected = Set(Model.defaultSelection(all).map(\.index))
                 m.phase = .previewReady(c)
             })
-            s.append(panel("apercu-\(c)-en-cours") { m in
-                m.output = Demo.yes(c).components(separatedBy: "\n").prefix(3).joined(separator: "\n")
-                m.phase = .cleaning(c)
-            })
+            s.append(panel("apercu-\(c)-en-cours") { m in m.phase = .cleaning(c) })
             s.append(panel("apercu-\(c)-resultat") { m in
                 let chosen = Model.defaultSelection(all)
                 m.result = CleanResult(ok: true, freedKB: chosen.reduce(0) { $0 + $1.kb }, sections: chosen.map(\.label), message: "")
-                m.output = Demo.yes(c)
                 m.phase = .cleaned(c)
             })
             s.append(panel("apercu-\(c)-erreur") { m in
                 m.sheetError = L.fr ? "Accès refusé : ~/Library/Caches (autoriser l'accès complet au disque)" : "Permission denied: ~/Library/Caches"
+                m.output = "rm: ~/Library/Caches/com.apple.Safari: Operation not permitted"
                 m.exitStatus = 1
                 m.phase = .previewReady(c)
             })
         }
         s.append(panel("apercu-trash-vide") { m in m.phase = .previewReady("trash") })
         s.append(window("fenetre-accueil") { _ in })
-        for t in ["large", "downloads", "duplicates", "startup", "dev", "cachesAdv", "system"] {
+        for t in ["large", "downloads", "duplicates", "startup", "dev", "cachesAdv"] {
             let cmd = t == "cachesAdv" ? "caches" : t
             let all = items(cmd)
-            let fill: (ToolModel) -> Void = { m in
-                if t == "system" {
-                    m.output = Demo.dryRun("system")
-                } else {
-                    m.items = all.filter { $0.index > 0 }
-                    m.skipped = all.filter { $0.index == 0 }
-                    m.selected = Set(m.items.filter { $0.type != "keep" && $0.state != "excluded" }.prefix(t == "startup" ? 1 : 3).map(\.key))
-                }
-            }
             s.append(window("outil-\(t)-chargement") { h in
                 h.current = t
                 h.tool(t).listing = true
             })
+            s.append(window("outil-\(t)-en-recherche") { h in
+                h.current = t
+                let m = h.tool(t)
+                fill(m, all, partial: true)
+                m.listing = true
+                if t == "duplicates" { m.step = "hash" }
+            })
             s.append(window("outil-\(t)-liste") { h in
                 h.current = t
-                fill(h.tool(t))
+                fill(h.tool(t), all)
             })
             s.append(window("outil-\(t)-apercu") { h in
                 h.current = t
                 let m = h.tool(t)
-                fill(m)
+                fill(m, all)
                 m.stage = .preview
-                if t != "system" { m.output = Demo.dryRun(cmd) }
-                m.message = L.t("previewNote") + (m.needsSudo ? " " + L.t("sudoNote") : "")
             })
             s.append(window("outil-\(t)-en-cours") { h in
                 h.current = t
                 let m = h.tool(t)
-                fill(m)
+                fill(m, all)
                 m.stage = .working
-                m.output = Demo.yes(cmd).components(separatedBy: "\n").prefix(3).joined(separator: "\n")
             })
             s.append(window("outil-\(t)-resultat") { h in
                 h.current = t
                 let m = h.tool(t)
-                fill(m)
+                fill(m, all)
+                let n = m.chosen.count
+                let kb = m.selectedKB
+                m.items = m.items.filter { !m.selected.contains($0.key) }
                 m.selected = []
                 m.stage = .done
-                m.output = Demo.yes(cmd)
-                m.message = L.t("doneNote")
+                m.result = ToolResult(ok: true, title: t == "startup" ? String(format: L.t("disabledN"), n)
+                                      : String(format: L.t("freedItems"), L.human(kb: kb), n),
+                                      detail: t == "startup" ? L.t("startupNote") : "")
             })
             s.append(window("outil-\(t)-vide") { h in
                 h.current = t
                 h.tool(t).items = []
             })
         }
+        let sys = items("system")
+        s.append(window("outil-system-chargement") { h in
+            h.current = "system"
+            h.tool("system").listing = true
+        })
+        s.append(window("outil-system-liste") { h in
+            h.current = "system"
+            h.tool("system").info = sys
+        })
+        s.append(window("outil-system-apercu") { h in
+            h.current = "system"
+            let m = h.tool("system")
+            m.info = sys
+            m.stage = .preview
+        })
+        s.append(window("outil-system-en-cours") { h in
+            h.current = "system"
+            let m = h.tool("system")
+            m.info = sys
+            m.stage = .working
+            m.steps = ["thin": "done", "purge": "running"]
+        })
+        s.append(window("outil-system-resultat") { h in
+            h.current = "system"
+            let m = h.tool("system")
+            m.info = sys
+            m.stage = .done
+            m.result = ToolResult(ok: true, title: String(format: L.t("freeFromTo"), L.human(kb: 119 * 1_048_576), L.human(kb: 126.4 * 1_048_576)))
+        })
         s.append(window("outil-large-erreur") { h in
             h.current = "large"
             let m = h.tool("large")
@@ -361,6 +434,7 @@ enum Snapshots {
             m.output = "find: /Users/demo/Library/Mail: Operation not permitted\nmac-cleaner: accès refusé"
             m.message = L.fr ? "Accès refusé à certains dossiers." : "Permission denied on some folders."
         })
+        let leftovers = ToolItem.parseList(Demo.uninstall("/Applications/Figma.app")).map { Leftover(path: $0.path, kb: $0.kb, type: $0.type) }
         s.append(window("desinstaller-liste") { h in
             h.current = "uninstall"
             h.uninstall.reload()
@@ -370,6 +444,7 @@ enum Snapshots {
             let m = h.uninstall
             m.reload()
             m.selected = Demo.apps[2]
+            m.leftovers = Array(leftovers.prefix(2))
             m.loading = true
         })
         s.append(window("desinstaller-selection") { h in
@@ -377,24 +452,24 @@ enum Snapshots {
             let m = h.uninstall
             m.reload()
             m.selected = Demo.apps[2]
-            m.leftovers = [Leftover(path: "/Applications/Figma.app", size: L.human(kb: 412 * 1024)),
-                           Leftover(path: "~/Library/Application Support/Figma", size: L.human(kb: 96 * 1024)),
-                           Leftover(path: "~/Library/Caches/com.figma.Desktop", size: L.human(kb: 38 * 1024))]
-            m.total = L.human(kb: 546 * 1024)
+            m.leftovers = leftovers
+            m.total = leftovers.reduce(0) { $0 + $1.kb }
         })
         s.append(window("desinstaller-en-cours") { h in
             h.current = "uninstall"
             let m = h.uninstall
             m.reload()
             m.selected = Demo.apps[2]
-            m.total = L.human(kb: 546 * 1024)
+            m.leftovers = leftovers
+            m.total = leftovers.reduce(0) { $0 + $1.kb }
             m.working = true
         })
         s.append(window("desinstaller-resultat") { h in
             h.current = "uninstall"
             let m = h.uninstall
             m.reload()
-            m.message = String(format: L.t("uninstalled"), "Figma")
+            m.result = ToolResult(ok: true, title: String(format: L.t("uninstalled"), "Figma"),
+                                  detail: String(format: L.t("uninstalledSize"), L.human(kb: leftovers.reduce(0) { $0 + $1.kb })))
         })
         s.append(window("carte-dossier-perso") { h in
             h.current = "diskmap"
@@ -422,37 +497,42 @@ enum Snapshots {
             m.total = 8
         })
         for t in ["maintenance", "privacy"] {
-            let fill: (CareModel) -> Void = { m in
-                if t == "maintenance" {
-                    m.tasks = items("maintenance")
-                    m.selected = Set(m.tasks.filter { $0.index > 0 }.map(\.index))
-                }
-                m.output = Demo.dryRun(t)
-                m.message = L.t("previewNote")
+            let all = items(t)
+            let fillCare: (CareModel) -> Void = { m in
+                m.tasks = all.filter { $0.index > 0 }
+                m.notes = all.filter { $0.index == 0 }
+                m.selected = Set(m.tasks.filter { t == "maintenance" || $0.type != "cookies" }.map(\.index))
             }
             s.append(window("\(t)-chargement") { h in
                 h.current = t
                 let m = h.careModel(t)
-                if t == "maintenance" { m.tasks = items("maintenance") }
+                if t == "privacy" { m.tasks = Array(all.prefix(3)) }
                 m.loading = true
             })
             s.append(window("\(t)-pret") { h in
                 h.current = t
-                fill(h.careModel(t))
+                fillCare(h.careModel(t))
             })
             s.append(window("\(t)-en-cours") { h in
                 h.current = t
                 let m = h.careModel(t)
-                fill(m)
-                m.message = nil
+                fillCare(m)
+                let order = m.selected.sorted()
+                m.states = Dictionary(uniqueKeysWithValues: order.enumerated().map { i, k in
+                    (k, i == 0 ? "done" : (i == 1 ? (t == "maintenance" ? "failed" : "running") : (i == 2 && t == "maintenance" ? "running" : "waiting")))
+                })
                 m.working = true
             })
             s.append(window("\(t)-termine") { h in
                 h.current = t
                 let m = h.careModel(t)
-                fill(m)
+                fillCare(m)
+                m.states = Dictionary(uniqueKeysWithValues: m.selected.map { ($0, "done") })
                 m.finished = true
-                m.message = L.t("done")
+                let kb = m.selectedKB
+                m.result = ToolResult(ok: true, title: t == "maintenance" ? String(format: L.t("tasksDone"), m.selected.count)
+                                      : String(format: L.t("erasedItems"), L.human(kb: kb), m.selected.count),
+                                      detail: t == "maintenance" ? L.t("maintAfter") : "")
             })
         }
         s.append(window("privacy-erreur") { h in

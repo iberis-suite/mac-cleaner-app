@@ -1,33 +1,31 @@
 import AppKit
 import SwiftUI
 
-extension Color {
-    static let accentBlue = Color(red: 0.09, green: 0.45, blue: 1.0)
-
-    static func level(_ l: Int) -> Color { Color(nsColor: Model.nsColor(level: l)) }
-}
-
 struct Ring: View {
     let fraction: Double?
     let value: String
     let label: String
-    var tint: Color = .accentBlue
+    var tint: Color = Theme.accent
+    var size: CGFloat = 88
 
     var body: some View {
         ZStack {
-            Circle().stroke(Color.primary.opacity(0.12), lineWidth: 7)
+            Circle().stroke(Theme.track, lineWidth: size * 0.1)
             if let fraction {
                 Circle()
                     .trim(from: 0, to: max(0.001, min(1, fraction)))
-                    .stroke(tint, style: StrokeStyle(lineWidth: 7, lineCap: .round))
+                    .stroke(tint, style: StrokeStyle(lineWidth: size * 0.1, lineCap: .round))
                     .rotationEffect(.degrees(-90))
+                    .shadow(color: tint.opacity(0.45), radius: 4)
             }
-            VStack(spacing: 1) {
-                Text(value).font(.system(size: 17, weight: .semibold, design: .rounded)).monospacedDigit()
-                Text(label).font(.system(size: 10)).foregroundStyle(.secondary)
+            VStack(spacing: 0) {
+                Text(label).font(.system(size: size * 0.12)).foregroundStyle(.secondary)
+                Text(value).font(.system(size: size * 0.2, weight: .bold, design: .rounded)).monospacedDigit()
+                    .lineLimit(1).minimumScaleFactor(0.7)
             }
+            .padding(.horizontal, size * 0.14)
         }
-        .frame(width: 84, height: 84)
+        .frame(width: size, height: size)
         .animation(.easeOut(duration: 0.4), value: fraction)
     }
 }
@@ -36,9 +34,7 @@ struct Card<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        content
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Color.primary.opacity(0.08)))
+        content.themeCard()
     }
 }
 
@@ -53,44 +49,69 @@ struct PanelView: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            Text("Mac Cleaner").font(.system(size: 20, weight: .bold, design: .rounded))
+            Text("Mac Cleaner").font(.system(size: 22, weight: .bold, design: .rounded))
             if !model.fullDiskAccess { accessLine }
             if model.cliPath == nil { missingView }
             rings
             if model.phase == .idle {
                 activitySection
+                NetworkCard(net: NetworkMonitor.shared, compact: true)
                 shortcutsGrid
                 cleanAllButton
                 toolsGrid
             } else {
                 PreviewSheet(model: model)
             }
-            Divider().opacity(0.5)
+            Rectangle().fill(Theme.divider).frame(height: 1)
             footer
         }
         .padding(16)
         .frame(width: 360)
-        .background(.ultraThinMaterial)
+        .background(Theme.background)
         .background(WindowReader { model.attachPanel($0) })
         .onAppear { model.panelOpened() }
+        .onDisappear { NetworkMonitor.shared.release("panel") }
     }
 
+    @ViewBuilder
     private var accessLine: some View {
-        Button { model.openFullDiskAccess() } label: {
+        if model.accessRequested {
             HStack(spacing: 6) {
                 Image(systemName: "lock.shield")
-                Text(L.t("fda"))
-                Spacer(minLength: 0)
-                Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .semibold))
+                Text(L.t("fdaRelaunch")).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Button(L.t("relaunch")) { model.relaunch() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                Button { model.openFullDiskAccess() } label: {
+                    Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .help(L.t("fda"))
             }
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .contentShape(Rectangle())
+            .themeCard(8)
+        } else {
+            Button { model.openFullDiskAccess() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "lock.shield")
+                    Text(L.t("fda"))
+                    Spacer(minLength: 0)
+                    Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .semibold))
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .themeCard(8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
     }
 
     @State private var usageMode = 0
@@ -155,13 +176,13 @@ struct PanelView: View {
             HStack(spacing: 6) {
                 Image(systemName: batterySymbol(b))
                     .font(.system(size: 13))
-                    .foregroundStyle(b.needsService ? Color.orange : Color.accentBlue)
+                    .foregroundStyle(b.needsService ? Theme.warn : Theme.accent)
                 Text("\(b.charge) %").font(.system(size: 12, weight: .semibold)).monospacedDigit()
                 Text("·").foregroundStyle(.tertiary)
                 Text(String(format: L.t("batteryLine"), b.health, b.cycles,
                             L.t(b.needsService ? "batteryService" : "batteryNormal")))
                     .font(.system(size: 11))
-                    .foregroundStyle(b.needsService ? Color.orange : Color.secondary)
+                    .foregroundStyle(b.needsService ? Theme.warn : Color.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
@@ -187,7 +208,7 @@ struct PanelView: View {
                 Button(L.t("quitApp")) { model.quitApp(u) }
                     .buttonStyle(.plain)
                     .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(Color.accentBlue)
+                    .foregroundStyle(Theme.accent)
             } else {
                 Text(L.t("quitApp")).font(.system(size: 10.5, weight: .medium)).hidden()
             }
@@ -204,7 +225,7 @@ struct PanelView: View {
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
+        .background(Theme.warnFill, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var heatNote: (String, Int) {
@@ -221,14 +242,14 @@ struct PanelView: View {
         HStack(alignment: .top, spacing: 0) {
             VStack(spacing: 6) {
                 Ring(fraction: Double(model.diskUsedPct) / 100, value: "\(model.diskUsedPct) %", label: L.t("disk"),
-                     tint: model.diskUsedPct >= 85 ? .level(Model.level(pct: model.diskUsedPct)) : .accentBlue)
+                     tint: model.diskUsedPct >= 85 ? .level(Model.level(pct: model.diskUsedPct)) : Theme.accent)
                 Text(String(format: L.t("freeDisk"), model.freeLabel))
                     .font(.caption).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity)
             VStack(spacing: 6) {
                 Ring(fraction: Double(model.memUsedPct) / 100, value: "\(model.memUsedPct) %", label: L.t("memory"),
-                     tint: model.memUsedPct >= 85 ? .level(2) : .accentBlue)
+                     tint: model.memUsedPct >= 85 ? .level(2) : Theme.accent)
                 Text(String(format: L.t("ramUsed"), model.memUsedPct))
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -237,7 +258,7 @@ struct PanelView: View {
                 let t = model.sensors.temperature
                 let (note, l) = heatNote
                 Ring(fraction: t.map { $0 / ChipProfile.current.hot }, value: t.map { L.deg($0) } ?? "—",
-                     label: L.t("heat"), tint: l > 0 ? .level(l) : .accentBlue)
+                     label: L.t("heat"), tint: l > 0 ? .level(l) : Theme.accent)
                 Text(note).font(.caption.weight(.semibold)).foregroundStyle(Color.level(l))
                 if let n = model.sensors.fanCount {
                     Text(L.fans(n, rpm: model.sensors.fanRPM))
@@ -285,10 +306,7 @@ struct PanelView: View {
     private func shortcutLabel(_ key: String, icon: String) -> some View {
         Card {
             HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.system(size: 14, weight: .medium))
-                    .frame(width: 30, height: 30)
-                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                IconTile(symbol: icon, size: 32, font: 15)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(L.t(key)).font(.system(size: 12, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.75)
                     Text(subtitle(key) ?? " ").font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
@@ -306,11 +324,13 @@ struct PanelView: View {
     private var cleanAllButton: some View {
         Button { model.preview("auto") } label: {
             Text(L.t("auto"))
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Theme.onAccent)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 11)
-                .background(Color.accentBlue, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(.vertical, 12)
+                .background(Theme.button, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(Color.white.opacity(0.18), lineWidth: 1))
+                .shadow(color: Theme.accent.opacity(0.35), radius: 8, y: 3)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -327,11 +347,7 @@ struct PanelView: View {
                         openTool(item.0)
                     } label: {
                         VStack(spacing: 5) {
-                            Image(systemName: item.1)
-                                .font(.system(size: 15))
-                                .foregroundStyle(Color.accentBlue)
-                                .frame(width: 38, height: 38)
-                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            IconTile(symbol: item.1, size: 40, font: 16)
                             Text(L.t(item.0))
                                 .font(.system(size: 9.5))
                                 .multilineTextAlignment(.center)

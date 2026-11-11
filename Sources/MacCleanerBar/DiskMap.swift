@@ -255,21 +255,15 @@ struct DiskMapView: View {
                 .fixedSize()
             }
             breadcrumb
+            ScanStatus(listing: model.scanning, step: model.scanning ? String(format: L.t("measuringN"), model.done, model.total) : nil,
+                       count: model.entries.count, kb: Double(model.currentSize) / 1024) { model.stop() }
             list
             if let m = model.message {
-                Text(m).font(.caption).foregroundStyle(model.failed ? Color.red : Color.secondary).lineLimit(2)
+                Text(m).font(.caption).foregroundStyle(model.failed ? Theme.bad : Color.secondary).lineLimit(2)
             }
             HStack(spacing: 10) {
                 Text(L.human(bytes: model.currentSize)).font(.system(size: 12, weight: .semibold)).monospacedDigit()
-                if model.scanning {
-                    ProgressView().controlSize(.small)
-                    Text(String(format: L.t("measuringN"), model.done, model.total))
-                        .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
-                }
                 Spacer()
-                if model.scanning {
-                    SecondaryButton(title: L.t("cancel")) { model.stop() }
-                }
             }
             .frame(minHeight: 32)
         }
@@ -291,10 +285,10 @@ struct DiskMapView: View {
                             Text(model.title(at: i)).lineLimit(1)
                         }
                         .font(.system(size: 12, weight: last ? .semibold : .regular))
-                        .foregroundStyle(last ? Color.primary : Color.accentBlue)
+                        .foregroundStyle(last ? Color.primary : Theme.accent)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 3)
-                        .background(last ? Color.primary.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .background(last ? Theme.tile : Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -321,18 +315,14 @@ struct DiskMapView: View {
             .padding(6)
         }
         .frame(maxHeight: .infinity)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .themeCard()
     }
 
     private func row(_ e: DiskEntry, maxSize: Int64) -> some View {
         HStack(spacing: 8) {
             Button { model.open(e) } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: e.isDir ? "folder.fill" : "doc")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.accentBlue)
-                        .frame(width: 22, height: 22)
-                        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    IconTile(symbol: e.isDir ? "folder.fill" : "doc", size: 24, font: 12)
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 6) {
                             Text(e.name).font(.system(size: 12)).lineLimit(1).truncationMode(.middle)
@@ -353,12 +343,12 @@ struct DiskMapView: View {
             .buttonStyle(.plain)
             .help(e.url.path)
             Button { model.showInFinder(e) } label: {
-                Image(systemName: "magnifyingglass.circle").font(.system(size: 13)).foregroundStyle(Color.accentBlue)
+                Image(systemName: "magnifyingglass.circle").font(.system(size: 13)).foregroundStyle(Theme.accent)
             }
             .buttonStyle(.plain)
             .help(L.t("showInFinder"))
             Button { model.trash(e) } label: {
-                Image(systemName: "trash").font(.system(size: 12)).foregroundStyle(Color.red.opacity(model.canTrash(e) ? 0.9 : 0.25))
+                Image(systemName: "trash").font(.system(size: 12)).foregroundStyle(Theme.destructive.opacity(model.canTrash(e) ? 0.9 : 0.25))
             }
             .buttonStyle(.plain)
             .disabled(!model.canTrash(e))

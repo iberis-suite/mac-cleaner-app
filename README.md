@@ -1,6 +1,6 @@
 # Mac Cleaner
 
-A free, lightweight macOS menu bar app to keep an eye on your Mac and clean it safely. Version 0.1, the first public release.
+A free, lightweight macOS menu bar app to keep an eye on your Mac and clean it safely. Version 0.2.
 
 <p>
   <img src="docs/01-panneau-normal-sombre.png" alt="Menu bar panel" width="360">
@@ -9,10 +9,12 @@ A free, lightweight macOS menu bar app to keep an eye on your Mac and clean it s
 
 ## What it does
 
-- **Panel**: disk space, memory, heat (sensors adapted to the chip) and fans at a glance.
+- **Panel**: disk space, memory, heat (sensors adapted to the chip), fans and network (Wi-Fi signal, live throughput, speed test with Apple's built-in tool) at a glance.
+- **Dashboard**: the tools window opens on your Mac's stats, the space freed this month and in total, recent cleanups and the next weekly run.
 - **Shortcuts**: free RAM, junk files, caches, Trash, or clean everything in one click.
-- **Tools**: uninstall apps with their leftovers, large files, old downloads, duplicates, login items, developer projects, advanced caches, system cleanup, disk map, maintenance, privacy.
+- **Tools**: uninstall apps with their leftovers, large files, old downloads, duplicates, login items, developer files, advanced caches, system cleanup, disk map, maintenance, privacy.
 - **Alerts** when the disk fills up or the Mac runs hot, resource-hungry apps, battery health, optional weekly clean.
+- **Results as they come**: lists fill in while the scan runs, and can be stopped at any time.
 - **Preview before any deletion**: nothing is removed until you have seen the list and confirmed.
 
 Cleaning is done by the [mac-cleaner](https://github.com/iberis-suite/mac-cleaner) CLI, embedded in the app: nothing else to install.
@@ -49,14 +51,16 @@ Report vulnerabilities privately, see [SECURITY.md](SECURITY.md).
 
 # Mac Cleaner (français)
 
-Application gratuite et légère pour la barre des menus macOS : surveiller son Mac et le nettoyer sans risque. Version 0.1, première version publique.
+Application gratuite et légère pour la barre des menus macOS : surveiller son Mac et le nettoyer sans risque. Version 0.2.
 
 ## Ce qu'elle fait
 
-- **Panneau** : espace disque, mémoire, chaleur (capteurs selon la puce) et ventilateurs d'un coup d'œil.
+- **Panneau** : espace disque, mémoire, chaleur (capteurs selon la puce), ventilateurs et réseau (signal Wi-Fi, débits en direct, test de vitesse avec l'outil intégré d'Apple) d'un coup d'œil.
+- **Tableau de bord** : la fenêtre des outils s'ouvre sur les statistiques du Mac, l'espace libéré ce mois et au total, les derniers nettoyages et le prochain nettoyage hebdomadaire.
 - **Raccourcis** : libérer la RAM, fichiers inutiles, caches, corbeille, ou tout nettoyer en un clic.
-- **Outils** : désinstaller une app et ses restes, gros fichiers, anciens téléchargements, doublons, éléments au démarrage, projets de développement, caches avancés, système, carte du disque, entretien, confidentialité.
+- **Outils** : désinstaller une app et ses restes, gros fichiers, anciens téléchargements, doublons, éléments au démarrage, fichiers de développement, caches avancés, système, carte du disque, entretien, confidentialité.
 - **Alertes** disque plein ou Mac trop chaud, apps gourmandes, santé de la batterie, nettoyage hebdomadaire facultatif.
+- **Résultats au fil de l'eau** : les listes se remplissent pendant l'analyse, qu'on peut arrêter à tout moment.
 - **Aperçu avant toute suppression** : rien n'est supprimé avant que vous ayez vu la liste et confirmé.
 
 Le nettoyage est fait par le CLI [mac-cleaner](https://github.com/iberis-suite/mac-cleaner), embarqué dans l'app : rien d'autre à installer.

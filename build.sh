@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 cd "${0:A:h}"
-VERSION=0.1.1
+VERSION=0.2.0
 APP="build/Mac Cleaner.app"
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)/MacCleanerBar"
@@ -31,6 +31,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSLocationWhenInUseUsageDescription</key><string>Mac Cleaner affiche le nom du réseau Wi-Fi ; macOS exige pour cela l'accès à la localisation. Il ne sert à rien d'autre. / Mac Cleaner shows the Wi-Fi network name; macOS requires location access for it. It is used for nothing else.</string>
+  <key>NSLocationUsageDescription</key><string>Mac Cleaner affiche le nom du réseau Wi-Fi ; macOS exige pour cela l'accès à la localisation. Il ne sert à rien d'autre. / Mac Cleaner shows the Wi-Fi network name; macOS requires location access for it. It is used for nothing else.</string>
 </dict>
 </plist>
 PLIST
