@@ -38,6 +38,11 @@ struct Card<Content: View>: View {
     }
 }
 
+private struct PanelHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 struct PanelView: View {
     @ObservedObject var model: Model
     let openTool: (String) -> Void
@@ -47,7 +52,31 @@ struct PanelView: View {
     ]
     private var tools: [(String, String)] { Catalog.tools }
 
+    @State private var contentHeight: CGFloat?
+
     var body: some View {
+        let limit = model.panelMaxHeight
+        let height = contentHeight.map { min($0, limit) }
+        ScrollView(.vertical, showsIndicators: (contentHeight ?? 0) > limit) {
+            content
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: PanelHeightKey.self, value: g.size.height)
+                })
+        }
+        .scrollDisabled((contentHeight ?? 0) <= limit)
+        .frame(width: 360, height: height)
+        .background(Theme.background.ignoresSafeArea())
+        .background(WindowReader { model.attachPanel($0) })
+        .onPreferenceChange(PanelHeightKey.self) { h in
+            guard h > 0, h != contentHeight else { return }
+            contentHeight = h
+            model.fitPanel(min(h, model.panelMaxHeight))
+        }
+        .onAppear { model.panelOpened() }
+        .onDisappear { NetworkMonitor.shared.release("panel") }
+    }
+
+    private var content: some View {
         VStack(spacing: 14) {
             Text("Mac Cleaner").font(.system(size: 22, weight: .bold, design: .rounded))
             if !model.fullDiskAccess { accessLine }
@@ -67,10 +96,7 @@ struct PanelView: View {
         }
         .padding(16)
         .frame(width: 360)
-        .background(Theme.background)
-        .background(WindowReader { model.attachPanel($0) })
-        .onAppear { model.panelOpened() }
-        .onDisappear { NetworkMonitor.shared.release("panel") }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder

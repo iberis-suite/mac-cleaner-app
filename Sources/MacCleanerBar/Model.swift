@@ -801,6 +801,22 @@ final class Model: ObservableObject {
         }
     }
 
+    var panelMaxHeight: CGFloat {
+        guard let screen = panelWindow?.screen ?? NSScreen.main else { return 900 }
+        return max(300, screen.visibleFrame.height - 12)
+    }
+
+    func fitPanel(_ height: CGFloat) {
+        guard let window = panelWindow else { return }
+        let apply = {
+            let frame = window.frame
+            guard abs(frame.height - height) > 0.5 else { return }
+            window.setFrame(NSRect(x: frame.minX, y: frame.maxY - height, width: frame.width, height: height), display: true)
+        }
+        apply()
+        DispatchQueue.main.async(execute: apply)
+    }
+
     func panelClosed() {
         if case .previewing = phase { back() }
         NetworkMonitor.shared.release("panel")
