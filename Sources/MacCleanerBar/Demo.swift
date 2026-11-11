@@ -553,6 +553,19 @@ enum Snapshots {
             let m = h.tool("dev")
             m.items = items("dev").filter { $0.type == "unity" }
         })
+        for t in ["downloads", "large"] {
+            let all = items(t)
+            for (name, n) in [("aucun", 0), ("certains", 2), ("tous", -1)] {
+                s.append(window("outil-\(t)-tout-\(name)") { h in
+                    h.current = t
+                    let m = h.tool(t)
+                    fill(m, all)
+                    m.selected = []
+                    m.selectAll(n != 0)
+                    if n > 0 { m.selected = Set(m.eligibleKeys.prefix(n)) }
+                })
+            }
+        }
         return s
     }
 }

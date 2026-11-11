@@ -80,6 +80,9 @@ final class ToolModel: ObservableObject {
     var onChange: (() -> Void)?
     private var run: CLIRun?
     private var generation = 0
+    private var followAll = false
+
+    static let riskyCaches: Set<String> = ["docker", "nodemod", "devsupport"]
 
     static let historyAction: [String: String] = [
         "large": "m4", "downloads": "m6", "duplicates": "m8", "startup": "m7", "dev": "md", "cachesAdv": "m5", "system": "ms",
@@ -132,6 +135,23 @@ final class ToolModel: ObservableObject {
 
     var selectedKB: Double { chosen.reduce(0) { $0 + $1.kb } }
 
+    func eligible(_ item: ToolItem) -> Bool {
+        item.type != "keep" && item.state != "excluded" && !(tool == "cachesAdv" && ToolModel.riskyCaches.contains(item.type))
+    }
+
+    var eligibleKeys: [String] {
+        var seen = Set<String>()
+        return items.filter { eligible($0) && seen.insert($0.key).inserted }.map(\.key)
+    }
+
+    var eligibleSelectedCount: Int { eligibleKeys.filter { selected.contains($0) }.count }
+
+    var eligibleSelectedKB: Double {
+        items.filter { eligible($0) && selected.contains($0.key) }.reduce(0) { $0 + $1.kb }
+    }
+
+    var canSelectAll: Bool { tool != "system" && stage != .working && stage != .previewing && !eligibleKeys.isEmpty }
+
     var hasSelection: Bool { tool == "system" ? !info.isEmpty : !selected.isEmpty }
 
     var busy: Bool { listing || stage == .previewing || stage == .working }
@@ -160,7 +180,7 @@ final class ToolModel: ObservableObject {
         failed = false
         step = nil
         let previous = Set(items.filter { selected.contains($0.key) }.map(\.path))
-        let auto = tool == "cachesAdv" && !keepResult && selected.isEmpty
+        followAll = tool == "cachesAdv" && !keepResult && selected.isEmpty
         items = []
         skipped = []
         info = []
@@ -178,7 +198,7 @@ final class ToolModel: ObservableObject {
                 return
             }
             guard let item = ToolItem.parse(l) else { return }
-            self.add(item, previous: previous, auto: auto)
+            self.add(item, previous: previous)
         }) { [weak self] text, status in
             guard let self, self.generation == gen else { return }
             self.listing = false
@@ -191,7 +211,7 @@ final class ToolModel: ObservableObject {
         }
     }
 
-    private func add(_ item: ToolItem, previous: Set<String>, auto: Bool) {
+    private func add(_ item: ToolItem, previous: Set<String>) {
         if tool == "system" {
             info.append(item)
             return
@@ -207,7 +227,7 @@ final class ToolModel: ObservableObject {
             items.append(item)
         }
         if previous.contains(item.path) && item.type != "keep" { selected.insert(item.key) }
-        if auto && item.state != "excluded" && !["docker", "nodemod", "devsupport"].contains(item.type) && item.kb > 0 {
+        if followAll && eligible(item) && !(tool == "cachesAdv" && item.kb <= 0) {
             selected.insert(item.key)
         }
     }
@@ -225,13 +245,19 @@ final class ToolModel: ObservableObject {
 
     func toggle(_ item: ToolItem) {
         guard stage != .working, stage != .previewing, item.type != "keep" else { return }
-        if selected.contains(item.key) { selected.remove(item.key) } else { selected.insert(item.key) }
+        if selected.contains(item.key) {
+            selected.remove(item.key)
+            followAll = false
+        } else {
+            selected.insert(item.key)
+        }
         if stage == .preview || stage == .done { resetStage() }
     }
 
-    func setAll(_ keys: [String], on: Bool) {
-        guard stage != .working, stage != .previewing else { return }
-        if on { selected.formUnion(keys) } else { selected.subtract(keys) }
+    func selectAll(_ on: Bool) {
+        guard tool != "system", stage != .working, stage != .previewing, !items.isEmpty else { return }
+        followAll = on
+        if on { selected.formUnion(eligibleKeys) } else { selected.removeAll() }
         if stage == .preview || stage == .done { resetStage() }
     }
 
@@ -481,6 +507,22 @@ struct ToolView: View {
     }
 
     private var list: some View {
+        VStack(spacing: 0) {
+            if !model.items.isEmpty {
+                SelectAllBar(count: model.eligibleSelectedCount, total: model.eligibleKeys.count,
+                             kb: model.tool == "startup" ? nil : model.eligibleSelectedKB,
+                             enabled: model.canSelectAll) { model.selectAll($0) }
+                    .padding(.horizontal, 6)
+                    .padding(.top, 6)
+                Divider().overlay(Theme.divider).padding(.horizontal, 10)
+            }
+            listScroll
+        }
+        .frame(maxHeight: .infinity)
+        .themeCard()
+    }
+
+    private var listScroll: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 2) {
                 if model.listing && model.items.isEmpty {
@@ -509,7 +551,6 @@ struct ToolView: View {
             .padding(6)
         }
         .frame(maxHeight: .infinity)
-        .themeCard()
     }
 
     private func sectionTitle(_ text: String) -> some View {
@@ -785,6 +826,54 @@ struct SystemInfoView: View {
         if s.hasPrefix("com.apple.TimeMachine."), parts.count > 3 { return parts[3] }
         if s.hasPrefix("com.apple.os.update") { return L.t("snapUpdate") }
         return parts.last ?? s
+    }
+}
+
+struct SelectAllBar: View {
+    let count: Int
+    let total: Int
+    var kb: Double?
+    var enabled = true
+    let set: (Bool) -> Void
+
+    private var all: Bool { total > 0 && count >= total }
+
+    private var symbol: String { count == 0 ? "square" : (all ? "checkmark.square.fill" : "minus.square.fill") }
+
+    private var counter: String {
+        let base = String(format: L.t("selectedOf"), count, total)
+        return kb.map { base + " · " + L.human(kb: $0) } ?? base
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button { set(!all) } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: symbol)
+                        .font(.system(size: 14))
+                        .foregroundStyle(enabled && count > 0 ? Theme.accent : Color.secondary)
+                    Text(L.t(all ? "selectNone" : "selectAll")).font(.system(size: 12, weight: .medium))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!enabled)
+            .help(all ? "\u{2318}\u{21E7}A" : "\u{2318}A")
+            Spacer(minLength: 6)
+            Text(counter).font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 5)
+        .background {
+            ZStack {
+                Button("") { set(true) }.keyboardShortcut("a", modifiers: .command)
+                Button("") { set(false) }.keyboardShortcut("a", modifiers: [.command, .shift])
+            }
+            .disabled(!enabled)
+            .opacity(0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
     }
 }
 

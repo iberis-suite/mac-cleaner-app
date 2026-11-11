@@ -21,6 +21,7 @@ final class CareModel: ObservableObject {
     private var run: CLIRun?
     private var generation = 0
     private var poll: Timer?
+    private var followAll = true
 
     init(tool: String, cliPath: String?) {
         self.tool = tool
@@ -32,6 +33,22 @@ final class CareModel: ObservableObject {
     var selectArg: String { selected.sorted().map(String.init).joined(separator: " ") }
 
     var selectedKB: Double { tasks.filter { selected.contains($0.index) }.reduce(0) { $0 + $1.kb } }
+
+    func eligible(_ t: ToolItem) -> Bool { t.index > 0 && (isMaintenance || t.type != "cookies") }
+
+    var eligibleIndexes: [Int] { tasks.filter(eligible).map(\.index) }
+
+    var eligibleSelectedCount: Int { eligibleIndexes.filter { selected.contains($0) }.count }
+
+    var eligibleSelectedKB: Double { tasks.filter { eligible($0) && selected.contains($0.index) }.reduce(0) { $0 + $1.kb } }
+
+    var canSelectAll: Bool { !working && !finished && !eligibleIndexes.isEmpty }
+
+    func selectAll(_ on: Bool) {
+        guard !working, !finished, !tasks.isEmpty else { return }
+        followAll = on
+        if on { selected.formUnion(eligibleIndexes) } else { selected.removeAll() }
+    }
 
     var canRun: Bool {
         cliPath != nil && !loading && !working && !finished && !failed && !selected.isEmpty
@@ -49,6 +66,7 @@ final class CareModel: ObservableObject {
         tasks = []
         notes = []
         selected = []
+        followAll = true
         output = ""
         guard let cli = cliPath else {
             message = L.t("missing") + " " + Model.installHint
@@ -60,7 +78,7 @@ final class CareModel: ObservableObject {
             guard let self, self.generation == gen, let item = ToolItem.parse(l) else { return }
             if item.index > 0 {
                 self.tasks.append(item)
-                if self.isMaintenance || item.type != "cookies" { self.selected.insert(item.index) }
+                if self.followAll && self.eligible(item) { self.selected.insert(item.index) }
             } else if self.isMaintenance {
                 self.tasks.append(item)
             } else {
@@ -79,7 +97,12 @@ final class CareModel: ObservableObject {
 
     func toggle(_ t: ToolItem) {
         guard t.index > 0, !working, !finished else { return }
-        if selected.contains(t.index) { selected.remove(t.index) } else { selected.insert(t.index) }
+        if selected.contains(t.index) {
+            selected.remove(t.index)
+            followAll = false
+        } else {
+            selected.insert(t.index)
+        }
     }
 
     func ask() {
@@ -300,11 +323,30 @@ struct CareView: View {
     @ViewBuilder
     private var list: some View {
         if model.isMaintenance {
-            listContent.themeCard()
+            VStack(spacing: 0) {
+                selectAllBar
+                listContent
+            }
+            .themeCard()
         } else {
-            ScrollView { listContent }
-                .frame(maxHeight: .infinity)
-                .themeCard()
+            VStack(spacing: 0) {
+                selectAllBar
+                ScrollView { listContent }
+            }
+            .frame(maxHeight: .infinity)
+            .themeCard()
+        }
+    }
+
+    @ViewBuilder
+    private var selectAllBar: some View {
+        if !model.tasks.isEmpty {
+            SelectAllBar(count: model.eligibleSelectedCount, total: model.eligibleIndexes.count,
+                         kb: model.isMaintenance ? nil : model.eligibleSelectedKB,
+                         enabled: model.canSelectAll) { model.selectAll($0) }
+                .padding(.horizontal, 6)
+                .padding(.top, 6)
+            Divider().overlay(Theme.divider).padding(.horizontal, 10)
         }
     }
 
