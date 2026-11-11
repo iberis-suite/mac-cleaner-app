@@ -7,7 +7,7 @@ cask "mac-cleaner-app" do
   desc "Menu bar app to monitor and clean your Mac"
   homepage "https://github.com/iberis-suite/mac-cleaner-app"
 
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
 
   app "Mac Cleaner.app"
 
