@@ -41,6 +41,10 @@ cd mac-cleaner-app && ./build.sh
 
 MIT, see [LICENSE](LICENSE).
 
+## Security
+
+Report vulnerabilities privately, see [SECURITY.md](SECURITY.md).
+
 ---
 
 # Mac Cleaner (français)
@@ -80,3 +84,7 @@ cd mac-cleaner-app && ./build.sh
 ## Licence
 
 MIT, voir [LICENSE](LICENSE).
+
+## Sécurité
+
+Signalez les failles en privé, voir [SECURITY.md](SECURITY.md).
