@@ -102,8 +102,7 @@ enum DiskAccess {
         return true
     }
 
-    static func trashSize() -> Int64? {
-        let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".Trash")
+    static func trashSize(at url: URL) -> Int64? {
         guard (try? FileManager.default.contentsOfDirectory(atPath: url.path)) != nil else { return nil }
         let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .isRegularFileKey]
         guard let e = FileManager.default.enumerator(at: url, includingPropertiesForKeys: keys) else { return nil }
@@ -165,21 +164,10 @@ extension Model {
             alertTrash(trashBytes)
             return
         }
-        guard !trashMeasuring else { return }
-        trashMeasuring = true
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let size = DiskAccess.trashSize()
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.trashMeasuring = false
-                self.trashCheckedAt = Date()
-                self.trashBytes = size
-                self.alertTrash(size)
-            }
-        }
+        measureTrash()
     }
 
-    private func alertTrash(_ bytes: Int64?) {
+    func alertTrash(_ bytes: Int64?) {
         guard alertsEnabled, let bytes, bytes > 5_000_000_000 else { return }
         AlertCenter.shared.post(kind: "trash", title: L.t("alertTrashTitle"),
                                 body: String(format: L.t("alertTrashBody"), L.human(bytes: bytes)))

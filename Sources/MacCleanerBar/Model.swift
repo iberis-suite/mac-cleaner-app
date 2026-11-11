@@ -119,7 +119,7 @@ final class CLIRun {
 @MainActor
 final class Model: ObservableObject {
     static let installHint = "brew install iberis-suite/tap/mac-cleaner"
-    static let estimated = ["temp", "caches", "trash"]
+    static let estimated = ["temp", "caches"]
 
     @Published var diskTotal: Int64 = 0
     @Published var diskFree: Int64 = 0
@@ -138,6 +138,8 @@ final class Model: ObservableObject {
     @Published var launchAtLogin = false
     @Published var estimates: [String: Double] = [:]
     @Published var estimating: Set<String> = []
+    @Published var trashUnreadable = false
+    private(set) var estimatedAt: [String: Date] = [:]
     @Published var purging = false
     @Published var notice: String?
     @Published var alertsEnabled: Bool
@@ -165,6 +167,9 @@ final class Model: ObservableObject {
     private var previewGeneration = 0
     private var panelObserver: NSObjectProtocol?
     private var lastEstimate: Date?
+    private var trashWatch: DispatchSourceFileSystemObject?
+    private var trashDebounce: DispatchWorkItem?
+    private var trashPending = false
     private var thermalObserver: NSObjectProtocol?
 
     init() {
@@ -189,6 +194,7 @@ final class Model: ObservableObject {
             Task { @MainActor in self?.thermalState = ProcessInfo.processInfo.thermalState }
         }
         refresh()
+        measureTrash()
         let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
@@ -272,6 +278,7 @@ final class Model: ObservableObject {
         launchAtLogin = SMAppService.mainApp.status == .enabled
         weeklyEnabled = WeeklyJob.isInstalled
         fullDiskAccess = DiskAccess.hasFullAccess()
+        watchTrash()
         thermalState = ProcessInfo.processInfo.thermalState
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let pct = Model.readMemFree()
@@ -287,6 +294,7 @@ final class Model: ObservableObject {
     func panelOpened() {
         refresh()
         refreshEstimates(force: false)
+        measureTrash()
         if !Demo.enabled { battery = Battery.read() }
         startActivity()
     }
@@ -379,7 +387,8 @@ final class Model: ObservableObject {
     }
 
     func refreshEstimates(force: Bool) {
-        guard let cli = cliPath, estimating.isEmpty else { return }
+        if force { measureTrash() }
+        guard let cli = cliPath, estimating.isDisjoint(with: Model.estimated) else { return }
         if !force, let last = lastEstimate, Date().timeIntervalSince(last) < 600 { return }
         lastEstimate = Date()
         estimate(cli: cli, queue: Model.estimated)
@@ -397,8 +406,86 @@ final class Model: ObservableObject {
             } else {
                 self.estimates[cmd] = nil
             }
+            self.estimatedAt[cmd] = Date()
             self.estimate(cli: cli, queue: Array(queue.dropFirst()))
         }
+    }
+
+    nonisolated static let trashURL: URL = {
+        if let dir = ProcessInfo.processInfo.environment["MAC_CLEANER_TRASH_DIR"], !dir.isEmpty {
+            return URL(fileURLWithPath: dir)
+        }
+        return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".Trash")
+    }()
+
+    func measureTrash() {
+        guard !Demo.enabled else { return }
+        if trashMeasuring {
+            trashPending = true
+            return
+        }
+        trashMeasuring = true
+        estimating.insert("trash")
+        let url = Model.trashURL
+        let cli = cliPath
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let readable = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) != nil
+            let local = readable && cli == nil ? DiskAccess.trashSize(at: url) : nil
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard readable else { return self.finishTrash(kb: nil, unreadable: true) }
+                guard let cli else { return self.finishTrash(kb: local.map { Double($0) / 1024 }, unreadable: false) }
+                CLIRun.start(cli: cli, args: ["trash", "--list"]) { [weak self] text, status in
+                    guard let self else { return }
+                    let kb = status == 0 ? Model.defaultSelection(ToolItem.parseList(text)).reduce(0) { $0 + $1.kb } : nil
+                    self.finishTrash(kb: kb, unreadable: false)
+                }
+            }
+        }
+    }
+
+    private func finishTrash(kb: Double?, unreadable: Bool) {
+        trashMeasuring = false
+        estimating.remove("trash")
+        trashUnreadable = unreadable
+        estimates["trash"] = kb
+        estimatedAt["trash"] = Date()
+        trashCheckedAt = Date()
+        trashBytes = kb.map { Int64($0 * 1024) }
+        alertTrash(trashBytes)
+        if trashPending {
+            trashPending = false
+            measureTrash()
+        }
+    }
+
+    private func watchTrash() {
+        guard trashWatch == nil, !Demo.enabled else { return }
+        let fd = open(Model.trashURL.path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd, eventMask: [.write, .delete, .rename, .link], queue: .main)
+        source.setEventHandler { [weak self, weak source] in
+            let gone = source.map { !$0.data.isDisjoint(with: [.delete, .rename]) } ?? false
+            Task { @MainActor in self?.trashChanged(gone: gone) }
+        }
+        source.setCancelHandler { close(fd) }
+        trashWatch = source
+        source.resume()
+    }
+
+    private func trashChanged(gone: Bool) {
+        if gone {
+            trashWatch?.cancel()
+            trashWatch = nil
+            watchTrash()
+        }
+        trashDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor in self?.measureTrash() }
+        }
+        trashDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
     }
 
     nonisolated static let selectable: Set<String> = ["caches", "temp"]
@@ -527,6 +614,7 @@ final class Model: ObservableObject {
                 self.sheetItems = ToolItem.parseList(self.output)
                 self.sheetSelected = Set(Model.defaultSelection(self.sheetItems).filter { $0.kb > 0 }.map(\.index))
                 self.estimates[command] = Model.defaultSelection(self.sheetItems).reduce(0) { $0 + $1.kb }
+                self.estimatedAt[command] = Date()
             } else {
                 self.sheetError = UninstallModel.lastMeaningfulLine(self.output)
             }

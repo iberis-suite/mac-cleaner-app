@@ -253,8 +253,12 @@ struct PanelView: View {
 
     private func subtitle(_ key: String) -> String? {
         if key == "ram" { return model.purging ? L.t("running") : String(format: L.t("ramUsed"), model.memUsedPct) }
+        if key == "trash" && model.trashUnreadable && !model.estimating.contains(key) { return "\u{2014}" }
+        if model.estimating.contains(key) {
+            let fresh = model.estimatedAt[key].map { Date().timeIntervalSince($0) < 600 } ?? false
+            if !fresh || model.estimates[key] == nil { return L.t("estimating") }
+        }
         if let kb = model.estimates[key] { return L.human(kb: kb) }
-        if model.estimating.contains(key) { return L.t("estimating") }
         return nil
     }
 
@@ -268,6 +272,7 @@ struct PanelView: View {
                         shortcutLabel(item.0, icon: item.1)
                     }
                     .buttonStyle(.plain)
+                    .help(item.0 == "trash" && model.trashUnreadable ? L.t("fda") : "")
                     .disabled(model.busy || (item.0 != "ram" && model.cliPath == nil))
                 }
             }
