@@ -22,12 +22,10 @@ struct Ring: View {
                 Text(label).font(.system(size: size * 0.12)).foregroundStyle(.secondary)
                 Text(value).font(.system(size: size * 0.2, weight: .bold, design: .rounded)).monospacedDigit()
                     .lineLimit(1).minimumScaleFactor(0.7)
-                    .live(value)
             }
             .padding(.horizontal, size * 0.14)
         }
         .frame(width: size, height: size)
-        .animation(.easeInOut(duration: 0.6), value: fraction)
     }
 }
 
@@ -191,7 +189,6 @@ struct PanelView: View {
                     } else {
                         let sub = subtitle(key) ?? " "
                         Text(sub).font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
-                            .live(sub)
                     }
                 }
                 .layoutPriority(1)
@@ -251,7 +248,6 @@ struct PanelView: View {
         HStack {
             Text(String(format: L.t("freedMonth"), L.human(kb: model.freedMonth)))
                 .font(.system(size: 12)).foregroundStyle(.secondary).monospacedDigit()
-                .live(model.freedMonth)
             Spacer()
             Menu {
                 Toggle(L.t("login"), isOn: Binding(
@@ -287,7 +283,6 @@ struct RamCaption: View {
     var body: some View {
         let sub = model.purging ? L.t("running") : String(format: L.t("ramUsed"), model.memUsedPct)
         Text(sub).font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
-            .live(sub)
     }
 }
 
@@ -314,7 +309,6 @@ struct LiveRings: View {
                      tint: model.diskUsedPct >= 85 ? .level(Model.level(pct: model.diskUsedPct)) : Theme.accent)
                 Text(String(format: L.t("freeDisk"), model.freeLabel))
                     .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                    .live(model.freeLabel)
             }
             .frame(maxWidth: .infinity)
             VStack(spacing: 6) {
@@ -322,7 +316,6 @@ struct LiveRings: View {
                      tint: model.memUsedPct >= 85 ? .level(2) : Theme.accent)
                 Text(String(format: L.t("ramUsed"), model.memUsedPct))
                     .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                    .live(model.memUsedPct)
             }
             .frame(maxWidth: .infinity)
             VStack(spacing: 6) {
@@ -334,7 +327,6 @@ struct LiveRings: View {
                 if let n = model.sensors.fanCount {
                     Text(L.fans(n, rpm: model.sensors.fanRPM))
                         .font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit()
-                        .live(model.sensors.fanRPM)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -362,7 +354,6 @@ struct ActivityPanel: View {
                     if !model.activityExpanded, let b = model.battery {
                         Image(systemName: batterySymbol(b)).font(.system(size: 11)).foregroundStyle(.secondary)
                         Text("\(b.charge) %").font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
-                            .live(b.charge)
                     }
                     Spacer()
                     Image(systemName: "chevron.right")
@@ -418,7 +409,6 @@ struct ActivityPanel: View {
                     .font(.system(size: 13))
                     .foregroundStyle(b.needsService ? Theme.warn : Theme.accent)
                 Text("\(b.charge) %").font(.system(size: 12, weight: .semibold)).monospacedDigit()
-                    .live(b.charge)
                 Text("·").foregroundStyle(.tertiary)
                 Text(String(format: L.t("batteryLine"), b.health, b.cycles,
                             L.t(b.needsService ? "batteryService" : "batteryNormal")))

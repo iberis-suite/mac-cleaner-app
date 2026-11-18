@@ -578,6 +578,12 @@ enum LiveCheck {
         return a[i + 1]
     }
 
+    private static func launchValue(_ name: String) -> String? {
+        let a = CommandLine.arguments
+        guard let i = a.firstIndex(of: name), i + 1 < a.count else { return nil }
+        return a[i + 1]
+    }
+
     static func run(_ model: Model, into dir: String) {
         let url = URL(fileURLWithPath: dir)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -586,6 +592,8 @@ enum LiveCheck {
         var closed = false
         var window: NSWindow?
         let start = Date()
+        let openFor = launchValue("--live-check-open").flatMap(Int.init) ?? 40
+        let prefix = launchValue("--live-check-name") ?? "temps-reel"
         let t = Timer(timeInterval: 1, repeats: true) { _ in
             Task { @MainActor in
                 let now = Date()
@@ -597,9 +605,9 @@ enum LiveCheck {
                 let since = opened.map { Int(now.timeIntervalSince($0).rounded()) } ?? -1
                 for mark in [1, 31] where since >= mark && !shots.contains(mark) {
                     shots.insert(mark)
-                    capture(model, to: url.appendingPathComponent(String(format: "temps-reel-%02ds.png", mark - 1)))
+                    capture(model, to: url.appendingPathComponent(String(format: "%@-%02ds.png", prefix, mark - 1)))
                 }
-                if since >= 40 && !closed {
+                if since >= openFor && !closed {
                     closed = true
                     window?.orderOut(nil)
                 }
