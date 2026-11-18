@@ -1,6 +1,6 @@
 cask "mac-cleaner-app" do
-  version "0.2.2"
-  sha256 "d497f4449f7443122844562e845a9494e0935c5097363ed32cf2f7b9f6acc920"
+  version "0.2.3"
+  sha256 "f131fd2c041b15b9083ff910b57c9f7e35d5de2180b448ee64bb4236a7a1255b"
 
   url "https://github.com/iberis-suite/mac-cleaner-app/releases/download/v#{version}/MacCleaner-#{version}.zip"
   name "Mac Cleaner"
