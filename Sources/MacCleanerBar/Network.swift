@@ -34,6 +34,8 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
     @Published var locationAsked = UserDefaults.standard.bool(forKey: "locationAsked")
 
     private var users: Set<String> = []
+    private var drivers: Set<String> = []
+    private var ticks = 0
     private var timer: Timer?
     private var last: (date: Date, inBytes: UInt32, outBytes: UInt32, name: String)?
     private var test: Process?
@@ -43,26 +45,34 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
         return m
     }()
 
-    func retain(_ who: String) {
-        users.insert(who)
-        guard timer == nil else { return }
-        if !Demo.enabled { locationStatus = location.authorizationStatus }
-        sample()
+    func retain(_ who: String, driven: Bool = false) {
+        let first = users.isEmpty && drivers.isEmpty
+        if driven { drivers.insert(who) } else { users.insert(who) }
+        if first {
+            if !Demo.enabled { locationStatus = location.authorizationStatus }
+            sample()
+        }
+        guard !driven, timer == nil else { return }
         let t = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.sample() }
         }
+        t.tolerance = 0.1
         RunLoop.main.add(t, forMode: .common)
         timer = t
     }
 
     func release(_ who: String) {
         users.remove(who)
+        drivers.remove(who)
         guard users.isEmpty else { return }
         timer?.invalidate()
         timer = nil
-        last = nil
-        down = nil
-        up = nil
+        if drivers.isEmpty { last = nil }
+    }
+
+    func pulse() {
+        guard !drivers.isEmpty else { return }
+        sample()
     }
 
     var bars: Int {
@@ -125,23 +135,28 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
         let wifi = CWWiFiClient.shared().interface()
         let wifiName = wifi?.interfaceName
         let wifiUp = (wifi?.rssiValue() ?? 0) != 0
+        let k: LinkKind
         if let primary, primary == wifiName, wifiUp {
-            kind = .wifi
+            k = .wifi
         } else if let primary, primary.hasPrefix("en") {
-            kind = .ethernet
+            k = .ethernet
         } else if wifiUp {
-            kind = .wifi
+            k = .wifi
         } else {
-            kind = primary == nil ? .none : .other
+            k = primary == nil ? .none : .other
         }
+        set(\.kind, k)
         if kind == .wifi {
-            ssid = wifi?.ssid()
-            rssi = wifi?.rssiValue()
-            linkRate = wifi?.transmitRate()
+            ticks += 1
+            if ticks % 3 == 1 || ssid == nil {
+                set(\.ssid, wifi?.ssid())
+                set(\.rssi, wifi?.rssiValue())
+                set(\.linkRate, wifi?.transmitRate())
+            }
         } else {
-            ssid = nil
-            rssi = nil
-            linkRate = nil
+            set(\.ssid, nil)
+            set(\.rssi, nil)
+            set(\.linkRate, nil)
         }
         guard let name = primary ?? (wifiUp ? wifiName : nil), let bytes = NetworkMonitor.bytes(name) else {
             down = nil
@@ -153,11 +168,20 @@ final class NetworkMonitor: NSObject, ObservableObject, CLLocationManagerDelegat
         if let l = last, l.name == name {
             let dt = now.timeIntervalSince(l.date)
             if dt > 0.5 {
-                down = Double(bytes.0 &- l.inBytes) / dt
-                up = Double(bytes.1 &- l.outBytes) / dt
+                down = NetworkMonitor.smooth(down, Double(bytes.0 &- l.inBytes) / dt)
+                up = NetworkMonitor.smooth(up, Double(bytes.1 &- l.outBytes) / dt)
             }
         }
         last = (now, bytes.0, bytes.1, name)
+    }
+
+    private func set<V: Equatable>(_ key: ReferenceWritableKeyPath<NetworkMonitor, V>, _ value: V) {
+        if self[keyPath: key] != value { self[keyPath: key] = value }
+    }
+
+    nonisolated static func smooth(_ old: Double?, _ new: Double) -> Double {
+        guard let old else { return new }
+        return old * 0.4 + new * 0.6
     }
 
     nonisolated static func primaryInterface() -> String? {

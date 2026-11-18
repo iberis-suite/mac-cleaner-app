@@ -154,15 +154,18 @@ final class CLIRun {
     }
 }
 
+final class LiveFeed: ObservableObject {}
+
 @MainActor
 final class Model: ObservableObject {
     static let installHint = "brew install iberis-suite/tap/mac-cleaner"
     static let estimated = ["temp", "caches"]
 
-    @Published var diskTotal: Int64 = 0
-    @Published var diskFree: Int64 = 0
-    @Published var memFreePct: Int = 100
-    @Published var sensors = SensorReading()
+    let live = LiveFeed()
+    var diskTotal: Int64 = 0 { willSet { live.objectWillChange.send() } }
+    var diskFree: Int64 = 0 { willSet { live.objectWillChange.send() } }
+    var memFreePct: Int = 100 { willSet { live.objectWillChange.send() } }
+    var sensors = SensorReading() { willSet { live.objectWillChange.send() } }
     @Published var freedMonth: Double = 0
     @Published var phase: Phase = .idle
     @Published var output = ""
@@ -184,11 +187,11 @@ final class Model: ObservableObject {
     @Published var accessRequested = UserDefaults.standard.bool(forKey: "fdaRequested")
     @Published var history: [HistoryEntry] = []
     @Published var freedTotal: Double = 0
-    @Published var battery: BatteryInfo?
-    @Published var topCPU: [AppUsage] = []
-    @Published var topMemory: [AppUsage] = []
+    var battery: BatteryInfo? { willSet { live.objectWillChange.send() } }
+    var topCPU: [AppUsage] = [] { willSet { live.objectWillChange.send() } }
+    var topMemory: [AppUsage] = [] { willSet { live.objectWillChange.send() } }
     @Published var activityExpanded: Bool
-    @Published var thermalState = ProcessInfo.processInfo.thermalState
+    var thermalState = ProcessInfo.processInfo.thermalState { willSet { live.objectWillChange.send() } }
 
     let cliPath: String?
     weak var panelWindow: NSWindow?
@@ -198,16 +201,21 @@ final class Model: ObservableObject {
     var trashMeasuring = false
     private var timer: Timer?
     private var ticks = 0
-    private var activityTimer: Timer?
+    private var liveTimer: Timer?
+    private var liveTicks = 0
+    private var liveSampling = false
+    private let liveQueue = DispatchQueue(label: "mac-cleaner.live", qos: .utility)
+    private var volumeObservers: [NSObjectProtocol] = []
     private let sampler = ProcSampler()
     private var current: CLIRun?
     private var runToken = 0
     private var previewGeneration = 0
-    private var panelObserver: NSObjectProtocol?
+    private var panelObservers: [NSObjectProtocol] = []
     private var lastEstimate: Date?
     private var trashWatch: DispatchSourceFileSystemObject?
     private var trashDebounce: DispatchWorkItem?
     private var trashPending = false
+    private var estimatePending = false
     private var thermalObserver: NSObjectProtocol?
     private var activeObserver: NSObjectProtocol?
 
@@ -239,6 +247,9 @@ final class Model: ObservableObject {
         }
         refresh()
         measureTrash()
+        if let dir = LiveCheck.requestedDirectory {
+            DispatchQueue.main.async { [weak self] in if let self { LiveCheck.run(self, into: dir) } }
+        }
         let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
@@ -247,7 +258,7 @@ final class Model: ObservableObject {
     }
 
     private func tick() {
-        refresh()
+        if liveTimer == nil { refresh() }
         ticks += 1
         if ticks % 5 == 0 { checkAlerts() }
     }
@@ -324,24 +335,90 @@ final class Model: ObservableObject {
         checkAccess()
         watchTrash()
         thermalState = ProcessInfo.processInfo.thermalState
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        sampleLive()
+    }
+
+    private func sampleLive() {
+        guard !liveSampling else { return }
+        liveSampling = true
+        let withBattery = battery != nil || liveTimer != nil
+        liveQueue.async { [weak self] in
             let pct = Model.readMemFree()
-            let s = Sensors.read()
+            var s = Sensors.read()
+            s.temperature = s.temperature.map { $0.rounded() }
+            s.fanRPM = s.fanRPM.map { ($0 / 10).rounded() * 10 }
+            let b = withBattery ? Battery.read() : nil
             DispatchQueue.main.async {
                 guard let self else { return }
-                if let pct { self.memFreePct = pct }
-                self.sensors = s
+                self.liveSampling = false
+                if let pct, pct != self.memFreePct { self.memFreePct = pct }
+                if s != self.sensors { self.sensors = s }
+                if withBattery, b != self.battery { self.battery = b }
             }
         }
     }
 
     func panelOpened() {
+        guard liveTimer == nil else { return }
         refresh()
-        refreshEstimates(force: false)
-        measureTrash()
-        if !Demo.enabled { battery = Battery.read() }
-        startActivity()
-        NetworkMonitor.shared.retain("panel")
+        refreshEstimates(force: true)
+        sampler.reset()
+        if activityExpanded { sampleActivity() }
+        NetworkMonitor.shared.retain("panel", driven: true)
+        observeVolumes()
+        liveTicks = 0
+        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.liveTick() }
+        }
+        t.tolerance = 0.1
+        RunLoop.main.add(t, forMode: .common)
+        liveTimer = t
+    }
+
+    private func stopLive() {
+        liveTimer?.invalidate()
+        liveTimer = nil
+        volumeObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        volumeObservers = []
+        NetworkMonitor.shared.release("panel")
+    }
+
+    var liveActive: Bool { liveTimer != nil }
+
+    private func liveTick() {
+        guard panelVisible else {
+            panelClosed()
+            return
+        }
+        if Demo.enabled {
+            Demo.fill(self)
+            if activityExpanded { sampleActivity() }
+            return
+        }
+        liveTicks += 1
+        let thermal = ProcessInfo.processInfo.thermalState
+        if thermal != thermalState { thermalState = thermal }
+        sampleLive()
+        if liveTicks % 2 == 0 {
+            if activityExpanded {
+                sampleActivity { NetworkMonitor.shared.pulse() }
+            } else {
+                NetworkMonitor.shared.pulse()
+            }
+        }
+        if liveTicks % 5 == 0 { readDisk() }
+    }
+
+    private func observeVolumes() {
+        guard volumeObservers.isEmpty, !Demo.enabled else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        let names: [Notification.Name] = [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification,
+                                          NSWorkspace.didRenameVolumeNotification]
+        volumeObservers = names.map { name in
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.readDisk() }
+            }
+        }
     }
 
     var panelVisible: Bool { panelWindow?.isVisible == true }
@@ -349,38 +426,17 @@ final class Model: ObservableObject {
     func setActivityExpanded(_ on: Bool) {
         activityExpanded = on
         UserDefaults.standard.set(on, forKey: "activityExpanded")
-        if on { startActivity() } else { stopActivity() }
-    }
-
-    func startActivity() {
-        guard activityExpanded, activityTimer == nil else { return }
-        sampler.reset()
-        sampleActivity()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.activityTick() }
-        let t = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.activityTick() }
+        if on {
+            sampler.reset()
+            sampleActivity()
         }
-        RunLoop.main.add(t, forMode: .common)
-        activityTimer = t
     }
 
-    func stopActivity() {
-        activityTimer?.invalidate()
-        activityTimer = nil
-    }
-
-    private func activityTick() {
-        guard activityExpanded, panelVisible else {
-            stopActivity()
-            return
-        }
-        sampleActivity()
-    }
-
-    private func sampleActivity() {
+    private func sampleActivity(then done: @escaping () -> Void = {}) {
         if Demo.enabled {
             topCPU = Demo.usages(byCPU: true)
             topMemory = Demo.usages(byCPU: false)
+            done()
             return
         }
         let apps = NSWorkspace.shared.runningApplications.filter {
@@ -395,10 +451,12 @@ final class Model: ObservableObject {
                                 icon: a.icon, cpu: r.cpu, memory: r.memory, canQuit: ProcSampler.canQuit(a))
             }
             if usages.contains(where: { $0.cpu != nil }) {
-                self.topCPU = Array(usages.sorted { ($0.cpu ?? 0) > ($1.cpu ?? 0) }.prefix(3))
+                let cpu = Array(usages.sorted { ($0.cpu ?? 0) > ($1.cpu ?? 0) }.prefix(3))
+                if cpu != self.topCPU { self.topCPU = cpu }
             }
-            self.topMemory = Array(usages.sorted { $0.memory > $1.memory }.prefix(3))
-            self.battery = Battery.read()
+            let mem = Array(usages.sorted { $0.memory > $1.memory }.prefix(3))
+            if mem != self.topMemory { self.topMemory = mem }
+            done()
         }
     }
 
@@ -473,14 +531,23 @@ final class Model: ObservableObject {
     func refreshEstimates(force: Bool) {
         guard !Snapshots.active else { return }
         if force { measureTrash() }
-        guard let cli = cliPath, estimating.isDisjoint(with: Model.estimated) else { return }
+        guard let cli = cliPath, estimating.isDisjoint(with: Model.estimated) else {
+            if force { estimatePending = true }
+            return
+        }
         if !force, let last = lastEstimate, Date().timeIntervalSince(last) < 600 { return }
         lastEstimate = Date()
         estimate(cli: cli, queue: Model.estimated)
     }
 
     private func estimate(cli: String, queue: [String]) {
-        guard let cmd = queue.first else { return }
+        guard let cmd = queue.first else {
+            if estimatePending {
+                estimatePending = false
+                refreshEstimates(force: true)
+            }
+            return
+        }
         estimating.insert(cmd)
         CLIRun.start(cli: cli, args: [cmd, "--list"]) { [weak self] text, status in
             guard let self else { return }
@@ -625,8 +692,8 @@ final class Model: ObservableObject {
         if let v = try? url.resourceValues(forKeys: keys),
            let total = v.volumeTotalCapacity,
            let free = v.volumeAvailableCapacityForImportantUsage {
-            diskTotal = Int64(total)
-            diskFree = free
+            if Int64(total) != diskTotal { diskTotal = Int64(total) }
+            if free != diskFree { diskFree = free }
             return
         }
         var s = statfs()
@@ -637,6 +704,11 @@ final class Model: ObservableObject {
     }
 
     nonisolated static func readMemFree() -> Int? {
+        var level: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        if sysctlbyname("kern.memorystatus_level", &level, &size, nil, 0) == 0, level > 0, level <= 100 {
+            return Int(level)
+        }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/memory_pressure")
         let pipe = Pipe()
@@ -793,12 +865,17 @@ final class Model: ObservableObject {
     func attachPanel(_ window: NSWindow?) {
         guard let window, window !== panelWindow else { return }
         panelWindow = window
-        if let panelObserver { NotificationCenter.default.removeObserver(panelObserver) }
-        panelObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didResignKeyNotification, object: window, queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.panelClosed() }
-        }
+        panelObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        let center = NotificationCenter.default
+        panelObservers = [
+            center.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.panelClosed() }
+            },
+            center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.panelOpened() }
+            },
+        ]
+        if window.isVisible { panelOpened() }
     }
 
     var panelMaxHeight: CGFloat {
@@ -819,7 +896,7 @@ final class Model: ObservableObject {
 
     func panelClosed() {
         if case .previewing = phase { back() }
-        NetworkMonitor.shared.release("panel")
+        stopLive()
     }
 
     func dismiss() {

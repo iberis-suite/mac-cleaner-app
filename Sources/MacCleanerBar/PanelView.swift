@@ -22,11 +22,12 @@ struct Ring: View {
                 Text(label).font(.system(size: size * 0.12)).foregroundStyle(.secondary)
                 Text(value).font(.system(size: size * 0.2, weight: .bold, design: .rounded)).monospacedDigit()
                     .lineLimit(1).minimumScaleFactor(0.7)
+                    .live(value)
             }
             .padding(.horizontal, size * 0.14)
         }
         .frame(width: size, height: size)
-        .animation(.easeOut(duration: 0.4), value: fraction)
+        .animation(.easeInOut(duration: 0.6), value: fraction)
     }
 }
 
@@ -73,7 +74,7 @@ struct PanelView: View {
             model.fitPanel(min(h, model.panelMaxHeight))
         }
         .onAppear { model.panelOpened() }
-        .onDisappear { NetworkMonitor.shared.release("panel") }
+        .onDisappear { model.panelClosed() }
     }
 
     private var content: some View {
@@ -81,9 +82,9 @@ struct PanelView: View {
             Text("Mac Cleaner").font(.system(size: 22, weight: .bold, design: .rounded))
             if !model.fullDiskAccess { accessLine }
             if model.cliPath == nil { missingView }
-            rings
+            LiveRings(model: model, live: model.live)
             if model.phase == .idle {
-                activitySection
+                ActivityPanel(model: model, live: model.live)
                 NetworkCard(net: NetworkMonitor.shared, compact: true)
                 shortcutsGrid
                 cleanAllButton
@@ -140,108 +141,6 @@ struct PanelView: View {
         }
     }
 
-    @State private var usageMode = 0
-
-    private var activitySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button { model.setActivityExpanded(!model.activityExpanded) } label: {
-                HStack(spacing: 6) {
-                    Text(L.t("activity")).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
-                    if !model.activityExpanded, let b = model.battery {
-                        Image(systemName: batterySymbol(b)).font(.system(size: 11)).foregroundStyle(.secondary)
-                        Text("\(b.charge) %").font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(model.activityExpanded ? 90 : 0))
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            if model.activityExpanded {
-                if let b = model.battery { batteryRow(b) }
-                Picker("", selection: $usageMode) {
-                    Text(L.t("cpu")).tag(0)
-                    Text(L.t("memory")).tag(1)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .controlSize(.small)
-                Card {
-                    VStack(spacing: 0) {
-                        let list = usageMode == 0 ? model.topCPU : model.topMemory
-                        if list.isEmpty {
-                            Text(L.t("measuring")).font(.system(size: 11)).foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, minHeight: 66)
-                        } else {
-                            ForEach(list) { usageRow($0) }
-                        }
-                    }
-                    .padding(.vertical, 4)
-                    .padding(.horizontal, 8)
-                }
-            }
-        }
-    }
-
-    private func batterySymbol(_ b: BatteryInfo) -> String {
-        if b.charging || b.onAC { return "battery.100.bolt" }
-        switch b.charge {
-        case ..<13: return "battery.0"
-        case ..<38: return "battery.25"
-        case ..<63: return "battery.50"
-        case ..<88: return "battery.75"
-        default: return "battery.100"
-        }
-    }
-
-    private func batteryRow(_ b: BatteryInfo) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-                Image(systemName: batterySymbol(b))
-                    .font(.system(size: 13))
-                    .foregroundStyle(b.needsService ? Theme.warn : Theme.accent)
-                Text("\(b.charge) %").font(.system(size: 12, weight: .semibold)).monospacedDigit()
-                Text("·").foregroundStyle(.tertiary)
-                Text(String(format: L.t("batteryLine"), b.health, b.cycles,
-                            L.t(b.needsService ? "batteryService" : "batteryNormal")))
-                    .font(.system(size: 11))
-                    .foregroundStyle(b.needsService ? Theme.warn : Color.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-            if !b.onAC, let top = model.topCPU.first {
-                Text(String(format: L.t("drains"), top.name))
-                    .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
-            }
-        }
-    }
-
-    private func usageRow(_ u: AppUsage) -> some View {
-        HStack(spacing: 8) {
-            if let icon = u.icon {
-                Image(nsImage: icon).resizable().frame(width: 18, height: 18)
-            } else {
-                Image(systemName: "app").frame(width: 18, height: 18)
-            }
-            Text(u.name).font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
-            Spacer(minLength: 4)
-            Text(usageMode == 0 ? L.pct(u.cpu ?? 0) : L.human(bytes: u.memory))
-                .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
-            if u.canQuit {
-                Button(L.t("quitApp")) { model.quitApp(u) }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(Theme.accent)
-            } else {
-                Text(L.t("quitApp")).font(.system(size: 10.5, weight: .medium)).hidden()
-            }
-        }
-        .frame(height: 22)
-    }
-
     private var missingView: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(L.t("missing")).font(.callout)
@@ -254,58 +153,10 @@ struct PanelView: View {
         .background(Theme.warnFill, in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private var heatNote: (String, Int) {
-        let l = model.heatLevel
-        return (Heat.label(l), min(2, l))
-    }
-
-    private var heatHelp: String {
-        let p = ChipProfile.current
-        return String(format: L.t("heatHelp"), p.family, L.num(p.high, 0), L.deg(p.hot), Heat.label(Heat.level(model.thermalState)))
-    }
-
-    private var rings: some View {
-        HStack(alignment: .top, spacing: 0) {
-            VStack(spacing: 6) {
-                Ring(fraction: Double(model.diskUsedPct) / 100, value: "\(model.diskUsedPct) %", label: L.t("disk"),
-                     tint: model.diskUsedPct >= 85 ? .level(Model.level(pct: model.diskUsedPct)) : Theme.accent)
-                Text(String(format: L.t("freeDisk"), model.freeLabel))
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            VStack(spacing: 6) {
-                Ring(fraction: Double(model.memUsedPct) / 100, value: "\(model.memUsedPct) %", label: L.t("memory"),
-                     tint: model.memUsedPct >= 85 ? .level(2) : Theme.accent)
-                Text(String(format: L.t("ramUsed"), model.memUsedPct))
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            VStack(spacing: 6) {
-                let t = model.sensors.temperature
-                let (note, l) = heatNote
-                Ring(fraction: t.map { $0 / ChipProfile.current.hot }, value: t.map { L.deg($0) } ?? "—",
-                     label: L.t("heat"), tint: l > 0 ? .level(l) : Theme.accent)
-                Text(note).font(.caption.weight(.semibold)).foregroundStyle(Color.level(l))
-                if let n = model.sensors.fanCount {
-                    Text(L.fans(n, rpm: model.sensors.fanRPM))
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .help(heatHelp)
-        }
-    }
-
     private func subtitle(_ key: String) -> String? {
-        if key == "ram" { return model.purging ? L.t("running") : String(format: L.t("ramUsed"), model.memUsedPct) }
         if key == "trash" && model.trashUnreadable && !model.estimating.contains(key) { return "\u{2014}" }
-        if model.estimating.contains(key) {
-            let fresh = model.estimatedAt[key].map { Date().timeIntervalSince($0) < 600 } ?? false
-            if !fresh || model.estimates[key] == nil { return L.t("estimating") }
-        }
         if let kb = model.estimates[key] { return L.human(kb: kb) }
+        if model.estimating.contains(key) { return L.t("estimating") }
         return nil
     }
 
@@ -335,7 +186,13 @@ struct PanelView: View {
                 IconTile(symbol: icon, size: 32, font: 15)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(L.t(key)).font(.system(size: 12, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.75)
-                    Text(subtitle(key) ?? " ").font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
+                    if key == "ram" {
+                        RamCaption(model: model, live: model.live)
+                    } else {
+                        let sub = subtitle(key) ?? " "
+                        Text(sub).font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
+                            .live(sub)
+                    }
                 }
                 .layoutPriority(1)
                 Spacer(minLength: 0)
@@ -393,7 +250,8 @@ struct PanelView: View {
     private var footer: some View {
         HStack {
             Text(String(format: L.t("freedMonth"), L.human(kb: model.freedMonth)))
-                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .font(.system(size: 12)).foregroundStyle(.secondary).monospacedDigit()
+                .live(model.freedMonth)
             Spacer()
             Menu {
                 Toggle(L.t("login"), isOn: Binding(
@@ -420,4 +278,183 @@ struct PanelView: View {
             .fixedSize()
         }
     }
+}
+
+struct RamCaption: View {
+    @ObservedObject var model: Model
+    @ObservedObject var live: LiveFeed
+
+    var body: some View {
+        let sub = model.purging ? L.t("running") : String(format: L.t("ramUsed"), model.memUsedPct)
+        Text(sub).font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
+            .live(sub)
+    }
+}
+
+struct LiveRings: View {
+    @ObservedObject var model: Model
+    @ObservedObject var live: LiveFeed
+
+    var body: some View { rings }
+
+    private var heatNote: (String, Int) {
+        let l = model.heatLevel
+        return (Heat.label(l), min(2, l))
+    }
+
+    private var heatHelp: String {
+        let p = ChipProfile.current
+        return String(format: L.t("heatHelp"), p.family, L.num(p.high, 0), L.deg(p.hot), Heat.label(Heat.level(model.thermalState)))
+    }
+
+    private var rings: some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(spacing: 6) {
+                Ring(fraction: Double(model.diskUsedPct) / 100, value: "\(model.diskUsedPct) %", label: L.t("disk"),
+                     tint: model.diskUsedPct >= 85 ? .level(Model.level(pct: model.diskUsedPct)) : Theme.accent)
+                Text(String(format: L.t("freeDisk"), model.freeLabel))
+                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    .live(model.freeLabel)
+            }
+            .frame(maxWidth: .infinity)
+            VStack(spacing: 6) {
+                Ring(fraction: Double(model.memUsedPct) / 100, value: "\(model.memUsedPct) %", label: L.t("memory"),
+                     tint: model.memUsedPct >= 85 ? .level(2) : Theme.accent)
+                Text(String(format: L.t("ramUsed"), model.memUsedPct))
+                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    .live(model.memUsedPct)
+            }
+            .frame(maxWidth: .infinity)
+            VStack(spacing: 6) {
+                let t = model.sensors.temperature
+                let (note, l) = heatNote
+                Ring(fraction: t.map { $0 / ChipProfile.current.hot }, value: t.map { L.deg($0) } ?? "—",
+                     label: L.t("heat"), tint: l > 0 ? .level(l) : Theme.accent)
+                Text(note).font(.caption.weight(.semibold)).foregroundStyle(Color.level(l))
+                if let n = model.sensors.fanCount {
+                    Text(L.fans(n, rpm: model.sensors.fanRPM))
+                        .font(.system(size: 10)).foregroundStyle(.secondary).monospacedDigit()
+                        .live(model.sensors.fanRPM)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .help(heatHelp)
+        }
+    }
+
+}
+
+struct ActivityPanel: View {
+    @ObservedObject var model: Model
+    @ObservedObject var live: LiveFeed
+
+    var body: some View { activitySection }
+
+    @State private var usageMode = 0
+
+    private var activitySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button { model.setActivityExpanded(!model.activityExpanded) } label: {
+                HStack(spacing: 6) {
+                    Text(L.t("activity")).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                    if !model.activityExpanded, let b = model.battery {
+                        Image(systemName: batterySymbol(b)).font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text("\(b.charge) %").font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
+                            .live(b.charge)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(model.activityExpanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if model.activityExpanded {
+                if let b = model.battery { batteryRow(b) }
+                Picker("", selection: $usageMode) {
+                    Text(L.t("cpu")).tag(0)
+                    Text(L.t("memory")).tag(1)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                Card {
+                    VStack(spacing: 0) {
+                        let list = usageMode == 0 ? model.topCPU : model.topMemory
+                        if list.isEmpty {
+                            Text(L.t("measuring")).font(.system(size: 11)).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, minHeight: 66)
+                        } else {
+                            ForEach(list) { usageRow($0) }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8)
+                    .animation(.easeInOut(duration: 0.35), value: (usageMode == 0 ? model.topCPU : model.topMemory).map(\.pid))
+                }
+            }
+        }
+    }
+
+    private func batterySymbol(_ b: BatteryInfo) -> String {
+        if b.charging || b.onAC { return "battery.100.bolt" }
+        switch b.charge {
+        case ..<13: return "battery.0"
+        case ..<38: return "battery.25"
+        case ..<63: return "battery.50"
+        case ..<88: return "battery.75"
+        default: return "battery.100"
+        }
+    }
+
+    private func batteryRow(_ b: BatteryInfo) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Image(systemName: batterySymbol(b))
+                    .font(.system(size: 13))
+                    .foregroundStyle(b.needsService ? Theme.warn : Theme.accent)
+                Text("\(b.charge) %").font(.system(size: 12, weight: .semibold)).monospacedDigit()
+                    .live(b.charge)
+                Text("·").foregroundStyle(.tertiary)
+                Text(String(format: L.t("batteryLine"), b.health, b.cycles,
+                            L.t(b.needsService ? "batteryService" : "batteryNormal")))
+                    .font(.system(size: 11))
+                    .foregroundStyle(b.needsService ? Theme.warn : Color.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            if !b.onAC, let top = model.topCPU.first {
+                Text(String(format: L.t("drains"), top.name))
+                    .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+    }
+
+    private func usageRow(_ u: AppUsage) -> some View {
+        HStack(spacing: 8) {
+            if let icon = u.icon {
+                Image(nsImage: icon).resizable().frame(width: 18, height: 18)
+            } else {
+                Image(systemName: "app").frame(width: 18, height: 18)
+            }
+            Text(u.name).font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 4)
+            Text(usageMode == 0 ? L.pct(u.cpu ?? 0) : L.human(bytes: u.memory))
+                .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
+            if u.canQuit {
+                Button(L.t("quitApp")) { model.quitApp(u) }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(Theme.accent)
+            } else {
+                Text(L.t("quitApp")).font(.system(size: 10.5, weight: .medium)).hidden()
+            }
+        }
+        .frame(height: 22)
+    }
+
 }

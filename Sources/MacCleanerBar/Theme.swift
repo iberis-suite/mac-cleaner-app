@@ -60,6 +60,10 @@ extension Color {
 }
 
 extension View {
+    func live<V: Equatable>(_ value: V) -> some View {
+        animation(.easeInOut(duration: 0.45), value: value)
+    }
+
     func themeCard(_ radius: CGFloat = 12) -> some View {
         background(Theme.card, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).stroke(Theme.cardBorder, lineWidth: 1))

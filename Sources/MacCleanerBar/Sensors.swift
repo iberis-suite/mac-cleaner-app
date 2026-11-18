@@ -192,10 +192,20 @@ enum Heat {
 
 enum Sensors {
     nonisolated(unsafe) private static var cpuKeys: [String]?
+    nonisolated(unsafe) private static var shared: SMC?
+    nonisolated(unsafe) private static var opened = false
+
+    private static var connection: SMC? {
+        if !opened {
+            opened = true
+            shared = SMC()
+        }
+        return shared
+    }
 
     static func read() -> SensorReading {
         var r = SensorReading()
-        if let smc = SMC() {
+        if let smc = connection {
             if let n = smc.value("FNum") {
                 let count = Int(n)
                 r.fanCount = count
@@ -234,7 +244,34 @@ enum HIDThermal {
     private typealias EventFn = @convention(c) (AnyObject, Int64, Int32, Int64) -> Unmanaged<AnyObject>?
     private typealias FloatFn = @convention(c) (AnyObject, Int32) -> Double
 
+    private struct Probe {
+        let services: [AnyObject]
+        let client: AnyObject
+        let copyEvent: EventFn
+        let getFloat: FloatFn
+    }
+
+    nonisolated(unsafe) private static var probe: Probe?
+    nonisolated(unsafe) private static var probed = false
+
     static func cpuTemperature() -> Double? {
+        if !probed {
+            probed = true
+            probe = makeProbe()
+        }
+        guard let p = probe else { return nil }
+        let kTemperature: Int64 = 15
+        var values: [Double] = []
+        for s in p.services {
+            guard let event = p.copyEvent(s, kTemperature, 0, 0)?.takeRetainedValue() else { continue }
+            let v = p.getFloat(event, Int32(kTemperature << 16))
+            if v >= 1 && v <= 130 { values.append(v) }
+        }
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Double(values.count)
+    }
+
+    private static func makeProbe() -> Probe? {
         guard let h = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW) else { return nil }
         func sym<T>(_ name: String, _ t: T.Type) -> T? {
             guard let p = dlsym(h, name) else { return nil }
@@ -250,16 +287,11 @@ enum HIDThermal {
         let matching = ["PrimaryUsagePage": 0xff00, "PrimaryUsage": 5] as CFDictionary
         _ = setMatching(client, matching)
         guard let services = copyServices(client)?.takeRetainedValue() as? [AnyObject] else { return nil }
-        let kTemperature: Int64 = 15
-        var values: [Double] = []
-        for s in services {
-            guard let name = copyProp(s, "Product" as CFString)?.takeRetainedValue() as? String,
-                  name.hasPrefix("PMU tdie") || name.hasPrefix("PMU2 tdie") else { continue }
-            guard let event = copyEvent(s, kTemperature, 0, 0)?.takeRetainedValue() else { continue }
-            let v = getFloat(event, Int32(kTemperature << 16))
-            if v >= 1 && v <= 130 { values.append(v) }
+        let dies = services.filter { s in
+            guard let name = copyProp(s, "Product" as CFString)?.takeRetainedValue() as? String else { return false }
+            return name.hasPrefix("PMU tdie") || name.hasPrefix("PMU2 tdie")
         }
-        guard !values.isEmpty else { return nil }
-        return values.reduce(0, +) / Double(values.count)
+        guard !dies.isEmpty else { return nil }
+        return Probe(services: dies, client: client, copyEvent: copyEvent, getFloat: getFloat)
     }
 }

@@ -569,3 +569,72 @@ enum Snapshots {
         return s
     }
 }
+
+@MainActor
+enum LiveCheck {
+    static var requestedDirectory: String? {
+        let a = CommandLine.arguments
+        guard let i = a.firstIndex(of: "--live-check"), i + 1 < a.count else { return nil }
+        return a[i + 1]
+    }
+
+    static func run(_ model: Model, into dir: String) {
+        let url = URL(fileURLWithPath: dir)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        var opened: Date?
+        var shots: Set<Int> = []
+        var closed = false
+        var window: NSWindow?
+        let start = Date()
+        let t = Timer(timeInterval: 1, repeats: true) { _ in
+            Task { @MainActor in
+                let now = Date()
+                if opened == nil, now.timeIntervalSince(start) >= 2 {
+                    model.activityExpanded = true
+                    window = host(model)
+                    opened = now
+                }
+                let since = opened.map { Int(now.timeIntervalSince($0).rounded()) } ?? -1
+                for mark in [1, 31] where since >= mark && !shots.contains(mark) {
+                    shots.insert(mark)
+                    capture(model, to: url.appendingPathComponent(String(format: "temps-reel-%02ds.png", mark - 1)))
+                }
+                if since >= 40 && !closed {
+                    closed = true
+                    window?.orderOut(nil)
+                }
+                log(model, since)
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+    }
+
+    private static func host(_ model: Model) -> NSWindow {
+        let w = NSWindow(contentRect: NSRect(x: -30_000, y: -30_000, width: 360, height: 900), styleMask: [.borderless],
+                         backing: .buffered, defer: false)
+        w.isReleasedWhenClosed = false
+        w.contentView = NSHostingView(rootView: PanelView(model: model) { _ in })
+        w.orderFrontRegardless()
+        return w
+    }
+
+    private static func log(_ m: Model, _ t: Int) {
+        let net = NetworkMonitor.shared
+        func f(_ v: Double?, _ d: Int = 0) -> String { v.map { String(format: "%.\(d)f", $0) } ?? "-" }
+        let top = m.topCPU.first.map { "\($0.name)=\(f($0.cpu, 1))" } ?? "-"
+        let est = ["temp", "caches", "trash"].map { "\($0)=\(f(m.estimates[$0]))\(m.estimating.contains($0) ? "*" : "")" }
+        let parts = ["t=\(t)", "visible=\(m.panelVisible)", "live=\(m.liveActive)", "mem=\(m.memUsedPct)",
+                     "temp=\(f(m.sensors.temperature, 2))", "fan=\(f(m.sensors.fanRPM))", "bat=\(m.battery.map { "\($0.charge)" } ?? "-")",
+                     "free=\(m.diskFree)", "down=\(f(net.down))", "up=\(f(net.up))", "top=\(top)"] + est
+        print(parts.joined(separator: " "))
+        fflush(stdout)
+    }
+
+    private static func capture(_ m: Model, to file: URL) {
+        guard let view = m.panelWindow?.contentView else { return }
+        let bounds = view.bounds
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: bounds) else { return }
+        view.cacheDisplay(in: bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: file)
+    }
+}

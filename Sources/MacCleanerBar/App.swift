@@ -197,7 +197,7 @@ struct MainView: View {
     private var detail: some View {
         let home = { hub.current = "home" }
         switch hub.current {
-        case "home": DashboardView(hub: hub, model: model)
+        case "home": DashboardView(hub: hub, model: model, live: model.live)
         case "uninstall": UninstallView(model: hub.uninstall, home: home)
         case "diskmap": DiskMapView(model: hub.diskMap, home: home)
         case "maintenance", "privacy": CareView(model: hub.careModel(hub.current), home: home).id(hub.current)
@@ -209,6 +209,7 @@ struct MainView: View {
 struct DashboardView: View {
     @ObservedObject var hub: Hub
     @ObservedObject var model: Model
+    @ObservedObject var live: LiveFeed
     @ObservedObject var net = NetworkMonitor.shared
 
     var body: some View {
@@ -453,9 +454,56 @@ enum Windows {
     }
 }
 
+@MainActor
+final class StatusBadge: ObservableObject {
+    @Published private(set) var icon = NSImage()
+    @Published private(set) var text = ""
+    private var level = -1
+    private var link: AnyCancellable?
+
+    init(_ model: Model) {
+        update(model)
+        link = model.objectWillChange.merge(with: model.live.objectWillChange).receive(on: RunLoop.main).sink { [weak self, weak model] _ in
+            if let self, let model { self.update(model) }
+        }
+    }
+
+    private func update(_ model: Model) {
+        let l = model.level
+        if l != level {
+            level = l
+            icon = model.statusIcon
+        }
+        let t = model.freeLabel
+        if t != text { text = t }
+    }
+}
+
+@MainActor
+final class AppState: ObservableObject {
+    let model: Model
+    let badge: StatusBadge
+
+    init() {
+        model = Model()
+        badge = StatusBadge(model)
+    }
+}
+
+struct StatusLabel: View {
+    @ObservedObject var badge: StatusBadge
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(nsImage: badge.icon)
+            Text(badge.text)
+        }
+    }
+}
+
 @main
 struct MacCleanerBarApp: App {
-    @StateObject private var model = Model()
+    @StateObject private var state = AppState()
 
     init() {
         if let dir = Snapshots.requestedDirectory {
@@ -465,12 +513,9 @@ struct MacCleanerBarApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            PanelView(model: model) { Windows.open($0, model: model) }
+            PanelView(model: state.model) { [model = state.model] in Windows.open($0, model: model) }
         } label: {
-            HStack(spacing: 3) {
-                Image(nsImage: model.statusIcon)
-                Text(model.freeLabel)
-            }
+            StatusLabel(badge: state.badge)
         }
         .menuBarExtraStyle(.window)
     }
